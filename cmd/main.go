@@ -2,21 +2,47 @@
 package main
 
 import (
+	"fmt"
 	"net/http"
+	"os"
 
+	"github.com/joho/godotenv"
 	"go.uber.org/zap"
+
+	"discordbot/constants/envvar"
+	"discordbot/discord"
 )
 
 func main() {
+	// Initialize logger first
+	initLogger()
+
+	// Load .env file
+	err := godotenv.Load()
+	if err != nil {
+		zap.L().Fatal("Failed to load .env file")
+	}
+
+	// Init and listen for HTTP requests
+	discordClient, err := discord.NewClient()
+	if err != nil {
+		zap.L().Fatal("Failed to create Discord client", zap.Error(err))
+	}
+	err = discordClient.Start()
+	if err != nil {
+		zap.L().Fatal("Failed to start Discord client", zap.Error(err))
+	}
+	defer discordClient.Close()
+	listen()
+}
+
+func initLogger() {
 	logger, err := zap.NewProduction()
 	if err != nil {
 		panic(err)
 	}
 	defer logger.Sync()
 	zap.ReplaceGlobals(logger)
-	
-	zap.S().Info("Starting server...")
-	listen()
 }
 
 func listen() {
@@ -24,30 +50,41 @@ func listen() {
 	http.HandleFunc("/", homeHandler)
 	http.HandleFunc("/health", healthHandler)
 	http.HandleFunc("/test", testEndpointHandler)
+	http.HandleFunc("/interactions", interactionsHandler)
 
 	// Start the server and listen on port 8080
-	port := ":8080"
-	zap.S().Infof("Server starting on port %s\n", port)
+	port := ":" + os.Getenv(envvar.Port)
+	if port == ":" {
+		port = ":8080"
+	}
+	zap.L().Info("Starting server", zap.String("port", port))
 	err := http.ListenAndServe(port, nil) // The 'nil' uses the default ServeMux
 	if err != nil {
-		zap.S().Fatal(err)
+		zap.L().Fatal("Failed to start server", zap.Error(err))
 	}
 }
 
 func homeHandler(w http.ResponseWriter, r *http.Request) {
-	zap.S().Infof("Hello, World!")
+	zap.L().Info("Hello, World!", zap.String("path", r.URL.Path))
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte("Hello, World!"))
 }
 
 func healthHandler(w http.ResponseWriter, r *http.Request) {
-	zap.S().Infof("Health check")
+	zap.L().Info("Health check")
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte("OK"))
 }
 
 func testEndpointHandler(w http.ResponseWriter, r *http.Request) {
-	zap.S().Infof("Test endpoint")
+	appID := os.Getenv(envvar.AppID)
 	w.WriteHeader(http.StatusOK)
-	w.Write([]byte("Test endpoint"))
+	zap.L().Info("Test endpoint", zap.String("app_id", appID))
+	w.Write([]byte(fmt.Sprintf("Test endpoint - APP_ID: %s", appID)))
+}
+
+func interactionsHandler(w http.ResponseWriter, r *http.Request) {
+	zap.L().Info("Interactions endpoint", zap.String("method", r.Method), zap.String("path", r.URL.Path))
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte("Interactions endpoint"))
 }
