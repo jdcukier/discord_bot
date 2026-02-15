@@ -42,9 +42,7 @@ type Client struct {
 
 // NewClient creates a new Client client with the given token
 func NewClient() (*Client, error) {
-	c := &Client{
-		config: Config{},
-	}
+	c := &Client{}
 	if err := c.Refresh(); err != nil {
 		return nil, fmt.Errorf("failed to retrieve discord client config: %w", err)
 	}
@@ -58,7 +56,7 @@ func NewClient() (*Client, error) {
 	c.handlers = append(c.handlers, &MessageHandler{})
 
 	for _, handler := range c.handlers {
-		zap.L().Info("adding handler", zap.Stringer("handler", handler))
+		logger.Info("adding handler", zap.Stringer("handler", handler))
 		if err := handler.Add(session); err != nil {
 			return nil, fmt.Errorf("failed to add %q handler: %w", handler, err)
 		}

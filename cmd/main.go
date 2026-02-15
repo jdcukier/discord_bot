@@ -10,39 +10,31 @@ import (
 	"go.uber.org/zap"
 
 	"discordbot/constants/envvar"
+	"discordbot/constants/zapkey"
 	"discordbot/discord"
+	"discordbot/log"
 )
 
 func main() {
 	// Initialize logger first
-	initLogger()
-
+	defer log.Logger.Sync()
+	
 	// Load .env file
-	err := godotenv.Load()
-	if err != nil {
-		zap.L().Fatal("Failed to load .env file")
+	if err := godotenv.Load(); err != nil {
+		logger.Fatal("Failed to load .env file", zap.Error(err))
 	}
 
 	// Init and listen for HTTP requests
 	discordClient, err := discord.NewClient()
 	if err != nil {
-		zap.L().Fatal("Failed to create Discord client", zap.Error(err))
+		logger.Fatal("Failed to create Discord client", zap.Error(err))
 	}
 	err = discordClient.Start()
 	if err != nil {
-		zap.L().Fatal("Failed to start Discord client", zap.Error(err))
+		logger.Fatal("Failed to start Discord client", zap.Error(err))
 	}
 	defer discordClient.Close()
 	listen()
-}
-
-func initLogger() {
-	logger, err := zap.NewProduction()
-	if err != nil {
-		panic(err)
-	}
-	defer logger.Sync()
-	zap.ReplaceGlobals(logger)
 }
 
 func listen() {
@@ -57,21 +49,21 @@ func listen() {
 	if port == ":" {
 		port = ":8080"
 	}
-	zap.L().Info("Starting server", zap.String("port", port))
+	logger.Info("Starting server", zap.String(zapkey.Port, port))
 	err := http.ListenAndServe(port, nil) // The 'nil' uses the default ServeMux
 	if err != nil {
-		zap.L().Fatal("Failed to start server", zap.Error(err))
+		logger.Fatal("Failed to start server", zap.Error(err))
 	}
 }
 
 func homeHandler(w http.ResponseWriter, r *http.Request) {
-	zap.L().Info("Hello, World!", zap.String("path", r.URL.Path))
+	logger.Info("Hello, World!", zap.String(zapkey.Path, r.URL.Path))
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte("Hello, World!"))
 }
 
 func healthHandler(w http.ResponseWriter, r *http.Request) {
-	zap.L().Info("Health check")
+	logger.Info("Health check")
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte("OK"))
 }
@@ -79,22 +71,22 @@ func healthHandler(w http.ResponseWriter, r *http.Request) {
 func testEndpointHandler(w http.ResponseWriter, r *http.Request) {
 	appID := os.Getenv(envvar.AppID)
 	w.WriteHeader(http.StatusOK)
-	zap.L().Info("Test endpoint", zap.String("app_id", appID))
+	logger.Info("Test endpoint", zap.String(zapkey.AppID, appID))
 	w.Write([]byte(fmt.Sprintf("Test endpoint - APP_ID: %s", appID)))
 }
 
 func interactionsHandler(w http.ResponseWriter, r *http.Request) {
-	zap.L().Info("Interactions endpoint", zap.String("method", r.Method), zap.String("path", r.URL.Path))
+	logger.Info("Interactions endpoint", zap.String(zapkey.Method, r.Method), zap.String(zapkey.Path, r.URL.Path))
 	
 	if r.Method != http.MethodPost {
-		zap.L().Warn("Invalid method for interactions endpoint", zap.String("method", r.Method))
+		logger.Warn("Invalid method for interactions endpoint", zap.String(zapkey.Method, r.Method))
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
 
 	handler, err := discord.NewInteractionHandler(r)
 	if err != nil {
-		zap.L().Error("Failed to create interaction handler", zap.Error(err))
+		logger.Error("Failed to create interaction handler", zap.Error(err))
 		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}
