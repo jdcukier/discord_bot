@@ -85,6 +85,20 @@ func testEndpointHandler(w http.ResponseWriter, r *http.Request) {
 
 func interactionsHandler(w http.ResponseWriter, r *http.Request) {
 	zap.L().Info("Interactions endpoint", zap.String("method", r.Method), zap.String("path", r.URL.Path))
-	w.WriteHeader(http.StatusOK)
-	w.Write([]byte("Interactions endpoint"))
+	
+	if r.Method != http.MethodPost {
+		zap.L().Warn("Invalid method for interactions endpoint", zap.String("method", r.Method))
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+
+	handler, err := discord.NewInteractionHandler(r)
+	if err != nil {
+		zap.L().Error("Failed to create interaction handler", zap.Error(err))
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+
+	handler.Handle(w)
 }
+
