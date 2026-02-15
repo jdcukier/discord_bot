@@ -8,7 +8,10 @@ import (
 )
 
 func main() {
-	logger, _ := zap.NewProduction()
+	logger, err := zap.NewProduction()
+	if err != nil {
+		panic(err)
+	}
 	defer logger.Sync()
 	zap.ReplaceGlobals(logger)
 	
@@ -19,6 +22,8 @@ func main() {
 func listen() {
 	// Register the handler function for the default route
 	http.HandleFunc("/", homeHandler)
+	http.HandleFunc("/health", healthHandler)
+	http.HandleFunc("/test", testEndpointHandler)
 
 	// Start the server and listen on port 8080
 	port := ":8080"
@@ -35,3 +40,14 @@ func homeHandler(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte("Hello, World!"))
 }
 
+func healthHandler(w http.ResponseWriter, r *http.Request) {
+	zap.S().Infof("Health check")
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte("OK"))
+}
+
+func testEndpointHandler(w http.ResponseWriter, r *http.Request) {
+	zap.S().Infof("Test endpoint")
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte("Test endpoint"))
+}
