@@ -4,86 +4,90 @@ package main
 import (
 	"fmt"
 	"net/http"
-	"os"
+	"time"
 
 	"github.com/joho/godotenv"
 	"go.uber.org/zap"
 
-	"discordbot/constants/envvar"
 	"discordbot/constants/zapkey"
+	"discordbot/debug"
 	"discordbot/discord"
-	"discordbot/log"
+	"discordbot/spotify"
+	"discordbot/utils/httputil"
 )
+
+type Clients interface {
+	fmt.Stringer
+	Start() error
+	Stop() error
+}
 
 // main entry point for the application
 func main() {
 	// Initialize logger first
-	defer log.Logger.Sync()
+	defer func() {
+		if err := logger.Sync(); err != nil {
+			logger.Error("Failed to sync logger", zap.Error(err))
+		}
+	}()
 
 	// Load .env file
 	if err := godotenv.Load(); err != nil {
 		logger.Fatal("Failed to load .env file", zap.Error(err))
 	}
 
+	// Start the HTTP server
+	port := httputil.Port()
+	logger.Info("Starting server", zap.String(zapkey.Port, port))
+	go func() {
+		if err := http.ListenAndServe(port, nil); err != nil {
+			logger.Fatal("Failed to start server", zap.Error(err), zap.String(zapkey.Port, port))
+		}
+	}()
+	// Give the server a moment to start
+	time.Sleep(100 * time.Millisecond)
+
+	// Initialize clients
+	var clients []Clients
+
+	// Initialize Debug client
+	// Note: This must be initialized first since it hosts the root HTTP path
+	debugClient, err := debug.NewClient()
+	if err != nil {
+		logger.Fatal("Failed to create Debug client", zap.Error(err))
+	}
+	clients = append(clients, debugClient)
+
+	// Initialize Spotify client (needs server to be running)
+	spotifyClient, err := spotify.NewClient()
+	if err != nil {
+		logger.Fatal("Failed to create Spotify client", zap.Error(err))
+	}
+	clients = append(clients, spotifyClient)
+
 	// Init and listen for HTTP requests
 	discordClient, err := discord.NewClient()
 	if err != nil {
 		logger.Fatal("Failed to create Discord client", zap.Error(err))
 	}
-	err = discordClient.Start()
-	if err != nil {
-		logger.Fatal("Failed to start Discord client", zap.Error(err))
-	}
-	defer discordClient.Close()
-	listen()
-}
+	clients = append(clients, discordClient)
 
-// listen starts the HTTP server and listens for incoming requests
-func listen() {
-	// Register the handler function for the default route
-	http.HandleFunc("/", homeHandler)
-	http.HandleFunc("/health", healthHandler)
-	http.HandleFunc("/test", testEndpointHandler)
+	// Start clients
+	for _, client := range clients {
+		if err := client.Start(); err != nil {
+			logger.Fatal("Failed to start client", zap.Error(err), zap.Stringer(zapkey.Client, client))
+		}
+	}
 
-	// Start the server and listen on port 8080
-	port := ":" + os.Getenv(envvar.Port)
-	if port == ":" {
-		port = ":8080"
-	}
-	logger.Info("Starting server", zap.String(zapkey.Port, port))
-	err := http.ListenAndServe(port, nil) // The 'nil' uses the default ServeMux
-	if err != nil {
-		logger.Fatal("Failed to start server", zap.Error(err))
-	}
-}
+	// Stop clients when the program exits
+	defer func() {
+		for _, client := range clients {
+			if err := client.Stop(); err != nil {
+				logger.Error("Failed to stop client", zap.Error(err), zap.Stringer(zapkey.Client, client))
+			}
+		}
+	}()
 
-// homeHandler handles the default route
-func homeHandler(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path != "/" {
-		// Not our job to handle this
-		return
-	}
-	logger.Info("Hello, World!", zap.String(zapkey.Path, r.URL.Path))
-	w.WriteHeader(http.StatusOK)
-	if _, err := fmt.Fprintf(w, "Hello, World!"); err != nil {
-		logger.Error("Failed to write response", zap.Error(err))
-	}
-}
-
-// healthHandler handles the health check route
-func healthHandler(w http.ResponseWriter, r *http.Request) {
-	logger.Info("Health check")
-	w.WriteHeader(http.StatusOK)
-	if _, err := fmt.Fprintf(w, "OK"); err != nil {
-		logger.Error("Failed to write response", zap.Error(err))
-	}
-}
-
-// testEndpointHandler handles the test endpoint route
-func testEndpointHandler(w http.ResponseWriter, r *http.Request) {
-	appID := os.Getenv(envvar.AppID)
-	w.WriteHeader(http.StatusOK)
-	if _, err := fmt.Fprintf(w, "Test endpoint - APP_ID: %s", appID); err != nil {
-		logger.Error("Failed to write response", zap.Error(err))
-	}
+	// Wait for server shutdown (this will block forever)
+	select {}
 }

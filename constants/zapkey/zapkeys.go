@@ -2,6 +2,7 @@ package zapkey
 
 // General Keys
 const (
+	Client = "client"
 	Count  = "count"
 	ID     = "id"
 	Name   = "name"

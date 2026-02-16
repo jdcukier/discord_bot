@@ -33,14 +33,14 @@ type Handler interface {
 	Add(session *discordgo.Session) error
 }
 
-// Client represents a Client client
+// Client represents a discord client
 type Client struct {
 	session  *discordgo.Session
 	config   Config
 	handlers []Handler
 }
 
-// NewClient creates a new Client client with the given token
+// NewClient creates a new discord client
 func NewClient() (*Client, error) {
 	c := &Client{}
 	if err := c.Refresh(); err != nil {
@@ -66,18 +66,34 @@ func NewClient() (*Client, error) {
 	return &Client{session: session}, nil
 }
 
-// ---- Start/Stop ----
-
-func (c *Client) Start() error {
-	return c.session.Open()
+// String returns a string representation of the client
+func (c *Client) String() string {
+	return "Discord Client"
 }
 
-func (c *Client) Close() error {
-	return c.session.Close()
+// ---- Start/Stop ----
+
+// Start the discord client
+func (c *Client) Start() error {
+	err := c.session.Open()
+	if err != nil {
+		return fmt.Errorf("failed to open discord session: %w", err)
+	}
+	return nil
+}
+
+// Stop the discord client
+func (c *Client) Stop() error {
+	err := c.session.Close()
+	if err != nil {
+		logger.Error("failed to close discord session", zap.Error(err))
+	}
+	return nil
 }
 
 // --- Config ---
 
+// Refresh the discord client config
 func (c *Client) Refresh() error {
 	if err := c.config.Refresh(); err != nil {
 		return fmt.Errorf("failed to refresh config: %w", err)
