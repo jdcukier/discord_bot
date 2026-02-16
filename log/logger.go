@@ -3,12 +3,13 @@ package log
 
 import (
 	"context"
-	"discordbot/constants/envvar"
-	"discordbot/utils/ctxutil"
 	"os"
 	"strconv"
 
 	"go.uber.org/zap"
+
+	"discordbot/constants/envvar"
+	"discordbot/utils/ctxutil"
 )
 
 // Logger is the global logger, used to derive package loggers

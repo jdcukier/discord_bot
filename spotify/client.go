@@ -2,11 +2,6 @@ package spotify
 
 import (
 	"context"
-	"discordbot/constants/envvar"
-	"discordbot/constants/zapkey"
-	"discordbot/log"
-	"discordbot/spotify/track"
-	"discordbot/utils/ctxutil"
 	"fmt"
 	"net/http"
 	"os"
@@ -17,6 +12,12 @@ import (
 	auth "github.com/zmb3/spotify/v2/auth"
 	"go.uber.org/zap"
 	"golang.org/x/oauth2"
+
+	"discordbot/constants/envvar"
+	"discordbot/constants/zapkey"
+	"discordbot/log"
+	"discordbot/spotify/track"
+	"discordbot/utils/ctxutil"
 )
 
 const (
