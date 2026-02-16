@@ -16,12 +16,12 @@ func extractURLs(content string) []string {
 func ExtractTracks(content string) ([]string, bool) {
 	urls := extractURLs(content)
 	var spotifyTracks []string
-	
+
 	for _, url := range urls {
 		if strings.Contains(url, "open.spotify.com/track") {
 			spotifyTracks = append(spotifyTracks, url)
 		}
 	}
-	
+
 	return spotifyTracks, len(spotifyTracks) > 0
 }

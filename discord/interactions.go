@@ -1,95 +1,96 @@
 package discord
 
 import (
-	"discordbot/constants/id"
-	"encoding/json"
+	"context"
 	"fmt"
-	"net/http"
+	"strings"
 
 	"github.com/bwmarrin/discordgo"
 	"go.uber.org/zap"
 
+	"discordbot/constants/id"
 	"discordbot/constants/zapkey"
+	"discordbot/utils/ctxutil"
+	"discordbot/utils/stringutil"
 )
 
-type InteractionHandler struct {
-	*discordgo.Interaction
+type InteractionSessionHandler struct {
 }
 
-func NewInteractionHandler(r *http.Request) (*InteractionHandler, error) {
-	interaction := &InteractionHandler{}
-	if err := json.NewDecoder(r.Body).Decode(interaction); err != nil {
-		return nil, fmt.Errorf("failed to decode interaction: %w", err)
+func (h *InteractionSessionHandler) String() string {
+	return "InteractionSessionHandler"
+}
+
+func (h *InteractionSessionHandler) Add(session *discordgo.Session) error {
+	if session == nil {
+		return fmt.Errorf("session is nil")
 	}
-
-	return interaction, nil
+	session.AddHandler(h.Handle)
+	return nil
 }
 
-func (h *InteractionHandler) Handle(w http.ResponseWriter) {
-	if h == nil {
+func (h *InteractionSessionHandler) Handle(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	if s == nil {
+		logger.Error("session is nil")
+		return
+	}
+	if i == nil {
 		logger.Error("interaction is nil")
-		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}
 
-	// Log interaction
-	logger.Info("Received interaction",
-		zap.String(zapkey.Type, fmt.Sprintf("%T", h.Type)),
-		zap.String(zapkey.ID, h.ID),
-		zap.String(zapkey.Name, h.ApplicationCommandData().Name))
+	_, fields := ctxutil.WithZapFields(
+		context.Background(),
+		zap.String(zapkey.Type, i.Type.String()),
+		zap.String(zapkey.ID, i.ID),
+	)
+
+	logger.Info("Received interaction", fields...)
 
 	// Determine interaction responder function
-	switch h.Type {
+	switch i.Type {
 	case discordgo.InteractionPing:
-		h.ping(w)
+		h.ping(s, i)
 	case discordgo.InteractionApplicationCommand:
-		h.handleSlashCommand(w)
+		h.slashCommand(s, i)
 	default:
-		logger.Error("no responder for interaction type", zap.String(zapkey.Type, h.Type.String()))
-		w.WriteHeader(http.StatusNotImplemented)
-		return
+		logger.Error("no responder for interaction type", fields...)
 	}
 }
 
-// TODO Make structs/interface to make this more flexible/testable
-
-func (h *InteractionHandler) ping(w http.ResponseWriter) {
+func (h *InteractionSessionHandler) ping(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	logger.Info("Handling ping interaction")
 
 	response := discordgo.InteractionResponse{
 		Type: discordgo.InteractionResponsePong,
+		Data: nil,
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	if err := json.NewEncoder(w).Encode(response); err != nil {
-		logger.Error("failed to encode ping response", zap.Error(err))
+	if err := s.InteractionRespond(i.Interaction, &response); err != nil {
+		logger.Error("failed to respond to ping", zap.Error(err))
 	}
 }
 
-func (h *InteractionHandler) handleSlashCommand(w http.ResponseWriter) {
-	data := h.ApplicationCommandData()
+func (h *InteractionSessionHandler) slashCommand(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	data := i.ApplicationCommandData()
 	logger.Info("Handling slash command", zap.String(zapkey.Command, data.Name))
 
 	switch data.Name {
 	case testCommand:
-		h.testCommand(w)
+		h.testCommand(s, i)
 	case challengeCommand:
-		h.challengeCommand(w)
+		h.challengeCommand(s, i)
 	default:
-		logger.Warn("Unknown slash command", zap.String(zapkey.Command, data.Name))
-		w.WriteHeader(http.StatusNotFound)
+		logger.Error("unknown slash command", zap.String(zapkey.Command, data.Name))
 	}
 }
 
-func (h *InteractionHandler) testCommand(w http.ResponseWriter) {
-	logger.Info("Handling test command")
-
+func (h *InteractionSessionHandler) testCommand(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	var userID string
-	if h.User != nil {
-		userID = h.User.ID
-	} else if h.Member != nil && h.Member.User != nil {
-		userID = h.Member.User.ID
+	if i.User != nil {
+		userID = i.User.ID
+	} else if i.Member != nil && i.Member.User != nil {
+		userID = i.Member.User.ID
 	}
 
 	var message string
@@ -109,26 +110,31 @@ func (h *InteractionHandler) testCommand(w http.ResponseWriter) {
 		},
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	if err := json.NewEncoder(w).Encode(response); err != nil {
-		logger.Error("Failed to encode response", zap.Error(err))
+	if err := s.InteractionRespond(i.Interaction, &response); err != nil {
+		logger.Error("failed to respond to test command", zap.Error(err))
 	}
 }
 
-func (h *InteractionHandler) challengeCommand(w http.ResponseWriter) {
-	logger.Info("Handling challenge command")
-
+func (h *InteractionSessionHandler) challengeCommand(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	msg := "Challenge me once you're worthy."
+	data := i.ApplicationCommandData()
+	if len(data.Options) > 0 {
+		choice := data.Options[0].StringValue()
+		msg = fmt.Sprintf(
+			"%s? Really? You think you can defeat me with %s? %s",
+			stringutil.ToTitleCase(choice),
+			strings.ToUpper(choice),
+			msg,
+		)
+	}
 	response := discordgo.InteractionResponse{
 		Type: discordgo.InteractionResponseChannelMessageWithSource,
 		Data: &discordgo.InteractionResponseData{
-			Content: "You can challenge me once you're worthy.",
+			Content: msg,
 		},
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	if err := json.NewEncoder(w).Encode(response); err != nil {
-		logger.Error("Failed to encode response", zap.Error(err))
+	if err := s.InteractionRespond(i.Interaction, &response); err != nil {
+		logger.Error("failed to respond to challenge command", zap.Error(err))
 	}
 }

@@ -1,28 +1,31 @@
 package zapkey
 
 // General Keys
-const(
-	Count = "count"
-	ID = "id"
-	Name = "name"
-	Type = "type"
-	User = "user"
+const (
+	Count  = "count"
+	ID     = "id"
+	Name   = "name"
+	Type   = "type"
+	User   = "user"
+	UserID = "user_id"
 )
 
 // HTTP Request Keys
-const(
+const (
 	Method = "method"
-	Path = "path"
-	Port = "port"
-	URL = "url"
+	Path   = "path"
+	Port   = "port"
+	URL    = "url"
 )
 
 // Discord Interaction Keys
-const(
-	AppID = "app_id"
-	Command = "command"
-	Content = "content"
-	Message = "message"
-	Reply = "reply"
-	Tracks = "tracks"
+const (
+	AppID     = "app_id"
+	Author    = "author"
+	ChannelID = "channel_id"
+	Command   = "command"
+	Content   = "content"
+	Message   = "message"
+	Reply     = "reply"
+	Tracks    = "tracks"
 )

@@ -1,6 +1,11 @@
 // Package envvar defines environment variable keys as constants
 package envvar
 
+// General constants
+const (
+	VerboseLogsEnabled = "VERBOSE_LOGS_ENABLED"
+)
+
 // HTTP-related constants
 const (
 	Port = "PORT"

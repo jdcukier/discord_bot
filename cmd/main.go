@@ -15,10 +15,11 @@ import (
 	"discordbot/log"
 )
 
+// main entry point for the application
 func main() {
 	// Initialize logger first
 	defer log.Logger.Sync()
-	
+
 	// Load .env file
 	if err := godotenv.Load(); err != nil {
 		logger.Fatal("Failed to load .env file", zap.Error(err))
@@ -37,12 +38,12 @@ func main() {
 	listen()
 }
 
+// listen starts the HTTP server and listens for incoming requests
 func listen() {
 	// Register the handler function for the default route
 	http.HandleFunc("/", homeHandler)
 	http.HandleFunc("/health", healthHandler)
 	http.HandleFunc("/test", testEndpointHandler)
-	http.HandleFunc("/interactions", interactionsHandler)
 
 	// Start the server and listen on port 8080
 	port := ":" + os.Getenv(envvar.Port)
@@ -56,41 +57,33 @@ func listen() {
 	}
 }
 
+// homeHandler handles the default route
 func homeHandler(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path != "/" {
+		// Not our job to handle this
+		return
+	}
 	logger.Info("Hello, World!", zap.String(zapkey.Path, r.URL.Path))
 	w.WriteHeader(http.StatusOK)
-	w.Write([]byte("Hello, World!"))
+	if _, err := fmt.Fprintf(w, "Hello, World!"); err != nil {
+		logger.Error("Failed to write response", zap.Error(err))
+	}
 }
 
+// healthHandler handles the health check route
 func healthHandler(w http.ResponseWriter, r *http.Request) {
 	logger.Info("Health check")
 	w.WriteHeader(http.StatusOK)
-	w.Write([]byte("OK"))
+	if _, err := fmt.Fprintf(w, "OK"); err != nil {
+		logger.Error("Failed to write response", zap.Error(err))
+	}
 }
 
+// testEndpointHandler handles the test endpoint route
 func testEndpointHandler(w http.ResponseWriter, r *http.Request) {
 	appID := os.Getenv(envvar.AppID)
 	w.WriteHeader(http.StatusOK)
-	logger.Info("Test endpoint", zap.String(zapkey.AppID, appID))
-	w.Write([]byte(fmt.Sprintf("Test endpoint - APP_ID: %s", appID)))
-}
-
-func interactionsHandler(w http.ResponseWriter, r *http.Request) {
-	logger.Info("Interactions endpoint", zap.String(zapkey.Method, r.Method), zap.String(zapkey.Path, r.URL.Path))
-	
-	if r.Method != http.MethodPost {
-		logger.Warn("Invalid method for interactions endpoint", zap.String(zapkey.Method, r.Method))
-		w.WriteHeader(http.StatusMethodNotAllowed)
-		return
+	if _, err := fmt.Fprintf(w, "Test endpoint - APP_ID: %s", appID); err != nil {
+		logger.Error("Failed to write response", zap.Error(err))
 	}
-
-	handler, err := discord.NewInteractionHandler(r)
-	if err != nil {
-		logger.Error("Failed to create interaction handler", zap.Error(err))
-		w.WriteHeader(http.StatusInternalServerError)
-		return
-	}
-
-	handler.Handle(w)
 }
-

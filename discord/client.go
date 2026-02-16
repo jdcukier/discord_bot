@@ -54,6 +54,7 @@ func NewClient() (*Client, error) {
 
 	// TODO: Make these configurable
 	c.handlers = append(c.handlers, &MessageHandler{})
+	c.handlers = append(c.handlers, &InteractionSessionHandler{})
 
 	for _, handler := range c.handlers {
 		logger.Info("adding handler", zap.Stringer("handler", handler))
