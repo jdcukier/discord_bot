@@ -22,4 +22,5 @@ const (
 	SpotifyID          = "SPOTIFY_ID"
 	SpotifySecret      = "SPOTIFY_SECRET"
 	SpotifyRedirectURI = "SPOTIFY_REDIRECT_URI"
+	SpotifyPlaylistID  = "SPOTIFY_PLAYLIST_ID"
 )

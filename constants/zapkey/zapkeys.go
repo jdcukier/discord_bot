@@ -2,13 +2,16 @@ package zapkey
 
 // General Keys
 const (
-	Client = "client"
-	Count  = "count"
-	ID     = "id"
-	Name   = "name"
-	Type   = "type"
-	User   = "user"
-	UserID = "user_id"
+	Client   = "client"
+	Count    = "count"
+	Data     = "data"
+	ID       = "id"
+	Name     = "name"
+	Result   = "result"
+	Scopes   = "scopes"
+	Type     = "type"
+	UserID   = "user_id"
+	UserName = "user"
 )
 
 // HTTP Request Keys
@@ -21,12 +24,18 @@ const (
 
 // Discord Interaction Keys
 const (
-	AppID     = "app_id"
-	Author    = "author"
-	ChannelID = "channel_id"
-	Command   = "command"
-	Content   = "content"
-	Message   = "message"
-	Reply     = "reply"
-	Tracks    = "tracks"
+	Action          = "action"
+	AppID           = "app_id"
+	Author          = "author"
+	ChannelID       = "channel_id"
+	Command         = "command"
+	Content         = "content"
+	Message         = "message"
+	PlaylistID      = "playlist_id"
+	PlaylistOwnerID = "playlist_owner_id"
+	Reply           = "reply"
+	TrackID         = "track_id"
+	TrackIDs        = "track_ids"
+	TrackURLs       = "track_urls"
+	TokenUserID     = "token_user_id"
 )

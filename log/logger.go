@@ -2,9 +2,16 @@
 package log
 
 import (
+	"context"
+	"discordbot/constants/envvar"
+	"discordbot/utils/ctxutil"
+	"os"
+	"strconv"
+
 	"go.uber.org/zap"
 )
 
+// Logger is the global logger, used to derive package loggers
 var Logger = initLogger()
 
 func initLogger() *zap.Logger {
@@ -15,4 +22,14 @@ func initLogger() *zap.Logger {
 	}
 	zap.ReplaceGlobals(logger)
 	return logger
+}
+
+// VerboseLogsEnabled returns true if verbose logs are enabled
+func VerboseLogsEnabled(ctx context.Context) bool {
+	verboseLogsEnabled, err := strconv.ParseBool(os.Getenv(envvar.VerboseLogsEnabled))
+	if err != nil {
+		fields := ctxutil.ZapFields(ctx)
+		Logger.With(zap.Error(err)).Warn("Failed to parse verbose logs enabled", fields...)
+	}
+	return verboseLogsEnabled
 }

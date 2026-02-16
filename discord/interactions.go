@@ -14,13 +14,22 @@ import (
 	"discordbot/utils/stringutil"
 )
 
+// InteractionSessionHandler handles interactions
 type InteractionSessionHandler struct {
+	// TODO: Config
 }
 
+// NewInteractionSessionHandler creates a new interaction session handler
+func NewInteractionSessionHandler() *InteractionSessionHandler {
+	return &InteractionSessionHandler{}
+}
+
+// String returns a string representation of the interaction session handler
 func (h *InteractionSessionHandler) String() string {
-	return "InteractionSessionHandler"
+	return "Interaction Session Handler"
 }
 
+// Add adds the interaction session handler to the session
 func (h *InteractionSessionHandler) Add(session *discordgo.Session) error {
 	if session == nil {
 		return fmt.Errorf("session is nil")
@@ -29,6 +38,7 @@ func (h *InteractionSessionHandler) Add(session *discordgo.Session) error {
 	return nil
 }
 
+// Handle interaction events
 func (h *InteractionSessionHandler) Handle(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	if s == nil {
 		logger.Error("session is nil")
@@ -58,6 +68,7 @@ func (h *InteractionSessionHandler) Handle(s *discordgo.Session, i *discordgo.In
 	}
 }
 
+// ping handles ping interactions
 func (h *InteractionSessionHandler) ping(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	logger.Info("Handling ping interaction")
 
@@ -71,6 +82,7 @@ func (h *InteractionSessionHandler) ping(s *discordgo.Session, i *discordgo.Inte
 	}
 }
 
+// slashCommand handles slash command interactions
 func (h *InteractionSessionHandler) slashCommand(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	data := i.ApplicationCommandData()
 	logger.Info("Handling slash command", zap.String(zapkey.Command, data.Name))
@@ -85,6 +97,7 @@ func (h *InteractionSessionHandler) slashCommand(s *discordgo.Session, i *discor
 	}
 }
 
+// testCommand handles the /test slash command interaction
 func (h *InteractionSessionHandler) testCommand(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	var userID string
 	if i.User != nil {
@@ -93,6 +106,7 @@ func (h *InteractionSessionHandler) testCommand(s *discordgo.Session, i *discord
 		userID = i.Member.User.ID
 	}
 
+	// TODO: Make this configurable
 	var message string
 	switch userID {
 	case id.UserIDGio:
@@ -115,6 +129,7 @@ func (h *InteractionSessionHandler) testCommand(s *discordgo.Session, i *discord
 	}
 }
 
+// challengeCommand handles the /challenge slash command interaction
 func (h *InteractionSessionHandler) challengeCommand(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	msg := "Challenge me once you're worthy."
 	data := i.ApplicationCommandData()

@@ -10,6 +10,9 @@ require (
 	golang.org/x/oauth2 v0.0.0-20210810183815-faf39c7919d5
 )
 
+// Use your fork with the playlist endpoint fix
+replace github.com/zmb3/spotify/v2 => ../spotify
+
 require (
 	github.com/golang/protobuf v1.5.2 // indirect
 	github.com/gorilla/websocket v1.4.2 // indirect

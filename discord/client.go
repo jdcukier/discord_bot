@@ -35,13 +35,12 @@ type Handler interface {
 
 // Client represents a discord client
 type Client struct {
-	session  *discordgo.Session
-	config   Config
-	handlers []Handler
+	session *discordgo.Session
+	config  Config
 }
 
 // NewClient creates a new discord client
-func NewClient() (*Client, error) {
+func NewClient(handlers ...Handler) (*Client, error) {
 	c := &Client{}
 	if err := c.Refresh(); err != nil {
 		return nil, fmt.Errorf("failed to retrieve discord client config: %w", err)
@@ -52,11 +51,7 @@ func NewClient() (*Client, error) {
 		return nil, fmt.Errorf("failed to create discord session: %w", err)
 	}
 
-	// TODO: Make these configurable
-	c.handlers = append(c.handlers, &MessageHandler{})
-	c.handlers = append(c.handlers, &InteractionSessionHandler{})
-
-	for _, handler := range c.handlers {
+	for _, handler := range handlers {
 		logger.Info("adding handler", zap.Stringer("handler", handler))
 		if err := handler.Add(session); err != nil {
 			return nil, fmt.Errorf("failed to add %q handler: %w", handler, err)

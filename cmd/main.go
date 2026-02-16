@@ -9,6 +9,7 @@ import (
 	"github.com/joho/godotenv"
 	"go.uber.org/zap"
 
+	"discordbot/constants/id"
 	"discordbot/constants/zapkey"
 	"discordbot/debug"
 	"discordbot/discord"
@@ -65,11 +66,8 @@ func main() {
 	}
 	clients = append(clients, spotifyClient)
 
-	// Init and listen for HTTP requests
-	discordClient, err := discord.NewClient()
-	if err != nil {
-		logger.Fatal("Failed to create Discord client", zap.Error(err))
-	}
+	// Initialize Discord client
+	discordClient := newDiscordClient(spotifyClient)
 	clients = append(clients, discordClient)
 
 	// Start clients
@@ -90,4 +88,27 @@ func main() {
 
 	// Wait for server shutdown (this will block forever)
 	select {}
+}
+
+// --- Helpers ---
+
+func newDiscordClient(playlistAdder discord.PlaylistAdder) *discord.Client {
+	// Actions to perform when a message is received
+	actions := make(discord.ChannelActions)
+	actions.Add(id.ChannelIDTest, discord.ActionReply)
+	actions.Add(id.ChannelIDTest, discord.ActionAddTracksToPlaylist)
+	actions.Add(id.ChannelIDBangers, discord.ActionAddTracksToPlaylist)
+
+	// Handlers
+	handlers := []discord.Handler{
+		discord.NewMessageHandler(playlistAdder, actions),
+		discord.NewInteractionSessionHandler(),
+	}
+
+	// Create the client
+	discordClient, err := discord.NewClient(handlers...)
+	if err != nil {
+		logger.Fatal("Failed to create Discord client", zap.Error(err))
+	}
+	return discordClient
 }
