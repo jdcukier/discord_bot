@@ -1,0 +1,40 @@
+version: '3.8'
+
+services:
+  discord-bot:
+    build:
+      context: .
+      platform: linux/arm64
+    image: discord-bot:latest
+    container_name: discord-bot
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      # Discord Bot Token
+      - DISCORD_BOT_TOKEN=${DISCORD_BOT_TOKEN}
+      
+      # Spotify Credentials
+      - SPOTIFY_ID=${SPOTIFY_ID}
+      - SPOTIFY_SECRET=${SPOTIFY_SECRET}
+      - SPOTIFY_REDIRECT_URI=${SPOTIFY_REDIRECT_URI}
+      - SPOTIFY_PLAYLIST_ID=${SPOTIFY_PLAYLIST_ID}
+      
+      # Optional: Pre-authorized tokens for production
+      # - SPOTIFY_ACCESS_TOKEN=${SPOTIFY_ACCESS_TOKEN}
+      # - SPOTIFY_REFRESH_TOKEN=${SPOTIFY_REFRESH_TOKEN}
+      
+      # Optional: Enable verbose logging
+      - VERBOSE_LOGS_ENABLED=${VERBOSE_LOGS_ENABLED:-false}
+      
+      # Optional: Ngrok for local development
+      - NGROK_AUTH_TOKEN=${NGROK_AUTH_TOKEN}
+    volumes:
+      # Optional: Mount logs directory
+      - ./logs:/app/logs
+    networks:
+      - discord-bot-network
+
+networks:
+  discord-bot-network:
+    driver: bridge

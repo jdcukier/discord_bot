@@ -1,0 +1,48 @@
+# Git
+.git
+.gitignore
+
+# Documentation
+README.md
+*.md
+
+# IDE
+.vscode
+.idea
+*.swp
+*.swo
+
+# Logs
+*.log
+logs/
+
+# Environment files (except .env for Docker)
+.env.local
+.env.production
+
+# Node modules (if any)
+node_modules/
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Build artifacts (except main binary for Docker)
+*.exe
+*.dll
+*.so
+*.dylib
+discord-bot
+
+# Test files
+*_test.go
+coverage.out
+
+# Temporary files
+*.tmp
+*.temp
