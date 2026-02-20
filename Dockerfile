@@ -1,5 +1,5 @@
 # Simple Dockerfile - just copy pre-built binary
-FROM --platform=linux/arm64 alpine:latest
+FROM alpine:latest
 
 # Install ca-certificates for HTTPS requests and tzdata
 RUN apk --no-cache add ca-certificates tzdata
