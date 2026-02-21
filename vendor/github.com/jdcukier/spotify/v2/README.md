@@ -1,6 +1,14 @@
 
 Spotify
 =======
+> [!NOTE]
+> This is a fork of [zmb3/spotify](https://github.com/zmb3/spotify) with fixes from [janvrska/spotify](https://github.com/janvrska/spotify/tree/master)
+> for [Spotify's Feb 2026s breaking changes to their API](https://developer.spotify.com/documentation/web-api/references/changes/february-2026).
+>
+> Unfortunately the original [zmb3/spotify](https://github.com/zmb3/spotify) no longer seems to be actively reviewing/merging PRs, so here we are.
+>
+> I may make small updates as needed, but all credits for the code go to those listed above. 
+
 
 [![GoDoc](https://godoc.org/github.com/zmb3/spotify?status.svg)](http://godoc.org/github.com/zmb3/spotify)
 

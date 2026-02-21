@@ -11,8 +11,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/zmb3/spotify/v2"
-	auth "github.com/zmb3/spotify/v2/auth"
+	"github.com/jdcukier/spotify/v2"
+	auth "github.com/jdcukier/spotify/v2/auth"
 	"go.uber.org/zap"
 	"golang.org/x/oauth2"
 
@@ -138,9 +138,14 @@ func (c *Client) loadToken() error {
 	return nil
 }
 
-// refreshTokenIfNeeded checks and refreshes token if expired
-func (c *Client) refreshTokenIfNeeded(ctx context.Context) error {
-	if c.token != nil && c.token.Valid() {
+// isTokenValid checks if the current token is valid
+func (c *Client) isTokenValid() bool {
+	return c.token != nil && c.token.Valid()
+}
+
+// refreshToken checks and refreshes token if expired
+func (c *Client) refreshToken(ctx context.Context) error {
+	if c.isTokenValid() {
 		return nil // Token is still valid
 	}
 
@@ -256,7 +261,7 @@ func (c *Client) AddTracksToPlaylist(
 	)
 
 	// Auto-refresh token if needed
-	if err := c.refreshTokenIfNeeded(ctx); err != nil {
+	if err := c.refreshToken(ctx); err != nil {
 		log.Logger.With(zap.Error(err)).Error("Failed to refresh token", fields...)
 		return fmt.Errorf("failed to refresh spotify token: %w", err)
 	}

@@ -1,17 +1,14 @@
 module discordbot
 
-go 1.25.0
+go 1.26
 
 require (
 	github.com/bwmarrin/discordgo v0.29.0
+	github.com/jdcukier/spotify/v2 v2.5.0
 	github.com/joho/godotenv v1.5.1
-	github.com/zmb3/spotify/v2 v2.4.3
 	go.uber.org/zap v1.27.1
 	golang.org/x/oauth2 v0.0.0-20210810183815-faf39c7919d5
 )
-
-// Use your fork with the playlist endpoint fix
-replace github.com/zmb3/spotify/v2 => ../spotify
 
 require (
 	github.com/golang/protobuf v1.5.2 // indirect

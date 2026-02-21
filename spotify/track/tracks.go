@@ -4,7 +4,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/zmb3/spotify/v2"
+	"github.com/jdcukier/spotify/v2"
 )
 
 // extractURLs extracts all URLs from the given content using regex
@@ -60,11 +60,11 @@ func FilterTracks(playlist *spotify.PlaylistItemPage, trackIDs []spotify.ID) []s
 	existingTracks := make(map[spotify.ID]struct{})
 	for _, playlistItem := range playlist.Items {
 		// This should never happen, but just in case
-		if playlistItem.Track.Track == nil {
+		if playlistItem.Item.Track == nil {
 			continue
 		}
 		// Add track to existing tracks
-		existingTracks[playlistItem.Track.Track.ID] = struct{}{}
+		existingTracks[playlistItem.Item.Track.ID] = struct{}{}
 	}
 
 	// Filter out tracks that are already in the playlist

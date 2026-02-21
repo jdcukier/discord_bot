@@ -7,13 +7,13 @@ github.com/golang/protobuf/proto
 # github.com/gorilla/websocket v1.4.2
 ## explicit; go 1.12
 github.com/gorilla/websocket
+# github.com/jdcukier/spotify/v2 v2.5.0
+## explicit; go 1.26
+github.com/jdcukier/spotify/v2
+github.com/jdcukier/spotify/v2/auth
 # github.com/joho/godotenv v1.5.1
 ## explicit; go 1.12
 github.com/joho/godotenv
-# github.com/zmb3/spotify/v2 v2.4.3 => ../spotify
-## explicit; go 1.16
-github.com/zmb3/spotify/v2
-github.com/zmb3/spotify/v2/auth
 # go.uber.org/multierr v1.11.0
 ## explicit; go 1.19
 go.uber.org/multierr
@@ -85,4 +85,3 @@ google.golang.org/protobuf/runtime/protoiface
 google.golang.org/protobuf/runtime/protoimpl
 google.golang.org/protobuf/types/descriptorpb
 google.golang.org/protobuf/types/gofeaturespb
-# github.com/zmb3/spotify/v2 => ../spotify
