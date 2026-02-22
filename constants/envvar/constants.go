@@ -13,13 +13,14 @@ const (
 
 // Discord-related constants
 const (
-	AppID        = "DISCORD_APP_ID"
-	DiscordToken = "DISCORD_TOKEN"
+	DiscordAppID         = "DISCORD_APP_ID"
+	DiscordAuthChannelID = "DISCORD_AUTH_CHANNEL_ID"
+	DiscordToken         = "DISCORD_TOKEN"
 )
 
 // Spotify-related constants
 const (
-	SpotifyID          = "SPOTIFY_ID"
+	SpotifyAppID       = "SPOTIFY_APP_ID"
 	SpotifySecret      = "SPOTIFY_SECRET"
 	SpotifyRedirectURI = "SPOTIFY_REDIRECT_URI"
 	SpotifyPlaylistID  = "SPOTIFY_PLAYLIST_ID"

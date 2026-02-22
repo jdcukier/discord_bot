@@ -8,6 +8,7 @@ const (
 )
 
 const (
-	UserIDGio   = "473239680238878720"
-	UserIDRehan = "693267107290284102"
+	UserIDGio    = "473239680238878720"
+	UserIDJustin = "189960488971403264"
+	UserIDRehan  = "693267107290284102"
 )

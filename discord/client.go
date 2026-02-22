@@ -2,29 +2,12 @@ package discord
 
 import (
 	"fmt"
-	"os"
 
 	"github.com/bwmarrin/discordgo"
 	"go.uber.org/zap"
 
-	"discordbot/constants/envvar"
+	"discordbot/discord/config"
 )
-
-// -- Config --
-
-type Config struct {
-	Token string
-}
-
-// Refresh retrieves the latest configuration from the env
-func (c *Config) Refresh() error {
-	token := os.Getenv(envvar.DiscordToken)
-	if token == "" {
-		return fmt.Errorf("DISCORD_TOKEN environment variable is not set")
-	}
-	c.Token = token
-	return nil
-}
 
 // -- Client --
 
@@ -35,30 +18,77 @@ type Handler interface {
 
 // Client represents a discord client
 type Client struct {
-	session *discordgo.Session
-	config  Config
+	session  *discordgo.Session
+	config   *config.Config
+	handlers []Handler
 }
 
 // NewClient creates a new discord client
-func NewClient(handlers ...Handler) (*Client, error) {
+func NewClient(options ...Option) (*Client, error) {
+	// Initialize client
 	c := &Client{}
-	if err := c.Refresh(); err != nil {
-		return nil, fmt.Errorf("failed to retrieve discord client config: %w", err)
+
+	// Apply options to override defaults
+	for _, opt := range options {
+		opt(c)
 	}
 
-	session, err := discordgo.New("Bot " + c.config.Token)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create discord session: %w", err)
+	// If a config wasn't provided, create the default config
+	if c.config == nil {
+		config, err := config.NewConfig()
+		if err != nil {
+			return nil, fmt.Errorf("failed to create config: %w", err)
+		}
+		c.config = config
 	}
 
-	for _, handler := range handlers {
-		logger.Info("adding handler", zap.Stringer("handler", handler))
-		if err := handler.Add(session); err != nil {
-			return nil, fmt.Errorf("failed to add %q handler: %w", handler, err)
+	// If a session wasn't provided, create a new one
+	if c.session == nil {
+		if err := c.createSession(); err != nil {
+			return nil, fmt.Errorf("failed to create session: %w", err)
 		}
 	}
 
-	return &Client{session: session}, nil
+	// Register discord event handlers
+	if err := c.registerHandlers(); err != nil {
+		return nil, fmt.Errorf("failed to register handlers: %w", err)
+	}
+
+	return c, nil
+}
+
+// createSession creates a new discord session
+func (c *Client) createSession() error {
+	if c.session != nil {
+		logger.Warn("overriding existing discord session")
+	}
+	session, err := discordgo.New("Bot " + c.config.Token)
+	if err != nil {
+		return fmt.Errorf("failed to create discord session: %w", err)
+	}
+	c.session = session
+
+	return nil
+}
+
+// registerHandlers sets callbacks for the discord session to handle registered events
+func (c *Client) registerHandlers() error {
+	if c.session == nil {
+		return fmt.Errorf("discord session is nil")
+	}
+	if len(c.handlers) == 0 {
+		return fmt.Errorf("no discord handlers to register")
+	}
+
+	// Register handlers
+	for _, handler := range c.handlers {
+		logger.Info("adding handler", zap.Stringer("handler", handler))
+		if err := handler.Add(c.session); err != nil {
+			return fmt.Errorf("failed to add %q handler: %w", handler, err)
+		}
+	}
+
+	return nil
 }
 
 // String returns a string representation of the client
@@ -82,16 +112,6 @@ func (c *Client) Stop() error {
 	err := c.session.Close()
 	if err != nil {
 		logger.Error("failed to close discord session", zap.Error(err))
-	}
-	return nil
-}
-
-// --- Config ---
-
-// Refresh the discord client config
-func (c *Client) Refresh() error {
-	if err := c.config.Refresh(); err != nil {
-		return fmt.Errorf("failed to refresh config: %w", err)
 	}
 	return nil
 }

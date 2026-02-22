@@ -106,7 +106,7 @@ func newDiscordClient(playlistAdder discord.PlaylistAdder) *discord.Client {
 	}
 
 	// Create the client
-	discordClient, err := discord.NewClient(handlers...)
+	discordClient, err := discord.NewClient(discord.WithHandlers(handlers...))
 	if err != nil {
 		logger.Fatal("Failed to create Discord client", zap.Error(err))
 	}

@@ -14,7 +14,6 @@ import (
 	"golang.org/x/oauth2"
 
 	"discordbot/constants/zapkey"
-	"discordbot/log"
 )
 
 const (
@@ -94,7 +93,7 @@ func (c *Client) saveToken() error {
 		return fmt.Errorf("failed to write token file: %w", err)
 	}
 
-	log.Logger.Info("Token saved to file", zap.String("path", tokenPath))
+	logger.Info("Token saved to file", zap.String("path", tokenPath))
 	return nil
 }
 
@@ -109,7 +108,7 @@ func (c *Client) loadToken() error {
 	data, err := os.ReadFile(tokenPath)
 	if err != nil {
 		if os.IsNotExist(err) {
-			log.Logger.Info("No existing token file found", zap.String("path", tokenPath))
+			logger.Info("No existing token file found", zap.String("path", tokenPath))
 			return nil // Not an error, just no token exists
 		}
 		return fmt.Errorf("failed to read token file: %w", err)
@@ -121,7 +120,7 @@ func (c *Client) loadToken() error {
 	}
 
 	c.token = &token
-	log.Logger.Info("Token loaded from file", zap.String("path", tokenPath))
+	logger.Info("Token loaded from file", zap.String("path", tokenPath))
 	return nil
 }
 
@@ -137,7 +136,7 @@ func (c *Client) refreshToken(ctx context.Context) error {
 	}
 
 	// Token is nil or expired, try to refresh
-	log.Logger.Info("Token expired or missing, attempting refresh")
+	logger.Info("Token expired or missing, attempting refresh")
 
 	if c.token == nil {
 		// Try to load from file
@@ -150,12 +149,12 @@ func (c *Client) refreshToken(ctx context.Context) error {
 		// Try to refresh using refresh token
 		newToken, err := c.authenticator.Exchange(ctx, c.token.RefreshToken)
 		if err != nil {
-			log.Logger.Error("Failed to refresh token", zap.Error(err))
+			logger.Error("Failed to refresh token", zap.Error(err))
 			return fmt.Errorf("failed to refresh token: %w", err)
 		}
 		c.token = newToken
 		if err := c.saveToken(); err != nil {
-			log.Logger.Error("Failed to save refreshed token", zap.Error(err))
+			logger.Error("Failed to save refreshed token", zap.Error(err))
 		}
 	}
 

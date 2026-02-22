@@ -62,7 +62,7 @@ func healthHandler(w http.ResponseWriter, r *http.Request) {
 
 // testEndpointHandler handles the test endpoint route
 func testEndpointHandler(w http.ResponseWriter, r *http.Request) {
-	appID := os.Getenv(envvar.AppID)
+	appID := os.Getenv(envvar.DiscordAppID)
 	w.WriteHeader(http.StatusOK)
 	if _, err := fmt.Fprintf(w, "Test endpoint - DISCORD_APP_ID: %s", appID); err != nil {
 		logger.Error("Failed to write response", zap.Error(err), zap.String(zapkey.Path, r.URL.Path))
