@@ -36,6 +36,8 @@ go.work.sum
 __pycache__/
 *.py[cod]
 *$py.class
+python_modules/
+.dev.vars
 
 # Distribution / packaging
 build/
