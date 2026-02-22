@@ -9,15 +9,16 @@ import (
 	"github.com/joho/godotenv"
 	"go.uber.org/zap"
 
-	"discordbot/constants/id"
 	"discordbot/constants/zapkey"
 	"discordbot/debug"
 	"discordbot/discord"
+	discordchannel "discordbot/discord/channel"
+	discordconfig "discordbot/discord/config"
 	"discordbot/spotify"
 	"discordbot/utils/httputil"
 )
 
-type Clients interface {
+type Client interface {
 	fmt.Stringer
 	Start() error
 	Stop() error
@@ -49,7 +50,7 @@ func main() {
 	time.Sleep(100 * time.Millisecond)
 
 	// Initialize clients
-	var clients []Clients
+	var clients []Client
 
 	// Initialize Debug client
 	// Note: This must be initialized first since it hosts the root HTTP path
@@ -59,16 +60,20 @@ func main() {
 	}
 	clients = append(clients, debugClient)
 
-	// Initialize Spotify client (needs server to be running)
-	spotifyClient, err := spotify.NewClient()
-	if err != nil {
-		logger.Fatal("Failed to create Spotify client", zap.Error(err))
-	}
-	clients = append(clients, spotifyClient)
+	// Initialize a pointer for the spotify client. We'll assign it later.
+	// TODO: There's probably a better way to do this.
+	var spotifyClient *spotify.Client
 
 	// Initialize Discord client
 	discordClient := newDiscordClient(spotifyClient)
 	clients = append(clients, discordClient)
+
+	// Initialize Spotify client (needs server to be running)
+	spotifyClient, err = spotify.NewClient(spotify.WithMessenger(discordClient))
+	if err != nil {
+		logger.Fatal("Failed to create Spotify client", zap.Error(err))
+	}
+	clients = append(clients, spotifyClient)
 
 	// Start clients
 	for _, client := range clients {
@@ -93,11 +98,28 @@ func main() {
 // --- Helpers ---
 
 func newDiscordClient(playlistAdder discord.PlaylistAdder) *discord.Client {
+	config, err := discordconfig.NewConfig()
+	if err != nil {
+		logger.Fatal("Failed to create Discord config", zap.Error(err))
+	}
+
 	// Actions to perform when a message is received
 	actions := make(discord.ChannelActions)
-	actions.Add(id.ChannelIDTest, discord.ActionReply)
-	actions.Add(id.ChannelIDTest, discord.ActionAddTracksToPlaylist)
-	actions.Add(id.ChannelIDBangers, discord.ActionAddTracksToPlaylist)
+	for channelType, channelID := range config.ChannelIDs {
+		switch channelType {
+		case discordchannel.Songs:
+			// Add tracks to playlist for the Songs channel
+			actions.Add(channelID, discord.ActionAddTracksToPlaylist)
+		case discordchannel.Debug:
+			// Add tracks to playlist and send a reply for the Debug channel
+			actions.Add(channelID, discord.ActionReply)
+			actions.Add(channelID, discord.ActionAddTracksToPlaylist)
+		default:
+			logger.Warn("Skipping unknown channel type",
+				zap.String(zapkey.ChannelType, channelType.String()),
+				zap.String(zapkey.ChannelID, channelID))
+		}
+	}
 
 	// Handlers
 	handlers := []discord.Handler{

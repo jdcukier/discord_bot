@@ -11,6 +11,7 @@ import (
 
 	"discordbot/constants/envvar"
 	"discordbot/constants/zapkey"
+	"discordbot/discord/channel"
 	"discordbot/spotify/track"
 	"discordbot/utils/ctxutil"
 )
@@ -29,7 +30,26 @@ type PlaylistAdder interface {
 	AddTracksToPlaylist(ctx context.Context, playlistID string, trackIDs []string) error
 }
 
-// --- Constructors ---
+// --- Message Sender ---
+
+// SendMessage sends a message to a channel
+func (c *Client) SendMessage(ctx context.Context, channelType string, message string) error {
+	if err := c.Validate(); err != nil {
+		return fmt.Errorf("failed to validate discord client: %w", err)
+	}
+	channelID, ok := c.config.ChannelIDs[channel.NewType(channelType)]
+	if !ok {
+		return fmt.Errorf("no channel configured for type: %s", channelType)
+	}
+
+	_, err := c.session.ChannelMessageSend(channelID, message)
+	if err != nil {
+		return fmt.Errorf("failed to send message: %w", err)
+	}
+	return nil
+}
+
+// --- Message Event Handlers ---
 
 // MessageHandler handles message events
 type MessageHandler struct {

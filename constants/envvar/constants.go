@@ -13,9 +13,14 @@ const (
 
 // Discord-related constants
 const (
-	DiscordAppID         = "DISCORD_APP_ID"
-	DiscordAuthChannelID = "DISCORD_AUTH_CHANNEL_ID"
-	DiscordToken         = "DISCORD_TOKEN"
+	// Authentication
+	DiscordAppID = "DISCORD_APP_ID"
+	DiscordToken = "DISCORD_TOKEN"
+
+	// Channel IDs
+	DiscordAuthChannelID  = "DISCORD_AUTH_CHANNEL_ID"
+	DiscordDebugChannelID = "DISCORD_DEBUG_CHANNEL_ID"
+	DiscordSongsChannelID = "DISCORD_SONGS_CHANNEL_ID"
 )
 
 // Spotify-related constants

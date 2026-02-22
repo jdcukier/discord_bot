@@ -28,6 +28,7 @@ const (
 	AppID           = "app_id"
 	Author          = "author"
 	ChannelID       = "channel_id"
+	ChannelType     = "channel_type"
 	Command         = "command"
 	Content         = "content"
 	Message         = "message"

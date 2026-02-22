@@ -54,6 +54,11 @@ func NewClient(options ...Option) (*Client, error) {
 		return nil, fmt.Errorf("failed to register handlers: %w", err)
 	}
 
+	// Validate client
+	if err := c.Validate(); err != nil {
+		return nil, fmt.Errorf("failed to validate discord client: %w", err)
+	}
+
 	return c, nil
 }
 
@@ -94,6 +99,23 @@ func (c *Client) registerHandlers() error {
 // String returns a string representation of the client
 func (c *Client) String() string {
 	return "Discord Client"
+}
+
+// Validate required fields of the discord client
+func (c *Client) Validate() error {
+	if c.config == nil {
+		return fmt.Errorf("discord client config is nil")
+	}
+	if err := c.config.Validate(); err != nil {
+		return fmt.Errorf("discord client config is invalid: %w", err)
+	}
+	if c.session == nil {
+		return fmt.Errorf("discord session is nil")
+	}
+	if len(c.handlers) == 0 {
+		return fmt.Errorf("no discord handlers registered")
+	}
+	return nil
 }
 
 // ---- Start/Stop ----

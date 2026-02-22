@@ -14,6 +14,7 @@ import (
 	"golang.org/x/oauth2"
 
 	"discordbot/constants/zapkey"
+	"discordbot/discord/channel"
 )
 
 const (
@@ -26,8 +27,14 @@ const (
 // Authenticate using Authorization Code Flow
 func (c *Client) authenticate() (*oauth2.Token, error) {
 	authURL := c.authenticator.AuthURL(state)
-	fmt.Println("Open this URL in your browser to authenticate:")
-	fmt.Println(authURL)
+
+	authMessage := fmt.Sprintf("Open this URL in your browser to authenticate:\n%s", authURL)
+
+	if err := c.messenger.SendMessage(context.Background(), channel.Auth.String(), authMessage); err != nil {
+		return nil, fmt.Errorf("failed to send auth message: %w", err)
+	}
+	// Log the auth URL just in case too
+	logger.Info(authMessage)
 
 	// Wait for callback
 	select {

@@ -14,19 +14,19 @@ import (
 	"discordbot/spotify/config"
 )
 
-// MessagePoster is an interface for posting messages
+// MessageSender is an interface for posting messages
 // This will primarily be used for posting the Spotify Auth link to the user instead of
 // needing to check the logs to find it.
 // Note: This may be expanded to support other message posting in the future.
-type MessagePoster interface {
-	PostMessage(ctx context.Context, message string) error
+type MessageSender interface {
+	SendMessage(ctx context.Context, channelType string, message string) error
 }
 
 // Client represents a spotify client
 type Client struct {
 	// Clients
 	api       *spotify.Client
-	messenger MessagePoster
+	messenger MessageSender
 
 	// Configuration
 	config *config.Config

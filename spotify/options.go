@@ -4,7 +4,7 @@ package spotify
 type Option func(*Client) error
 
 // WithMessenger configures the client with a message poster
-func WithMessenger(messenger MessagePoster) Option {
+func WithMessenger(messenger MessageSender) Option {
 	return func(c *Client) error {
 		c.messenger = messenger
 		return nil
