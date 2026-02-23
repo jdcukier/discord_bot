@@ -15,6 +15,8 @@ import (
 
 	"discordbot/constants/zapkey"
 	"discordbot/discord/channel"
+	"discordbot/log"
+	"discordbot/utils/ctxutil"
 )
 
 const (
@@ -30,16 +32,23 @@ func (c *Client) authenticate() (*oauth2.Token, error) {
 
 	authMessage := fmt.Sprintf("Open this URL in your browser to authenticate:\n%s", authURL)
 
-	if err := c.messenger.SendMessage(context.Background(), channel.Auth.String(), authMessage); err != nil {
-		return nil, fmt.Errorf("failed to send auth message: %w", err)
+	// Send auth message via messenger if available, otherwise just log it
+	if c.messenger != nil {
+		if err := c.messenger.SendMessage(context.Background(), channel.Auth.String(), authMessage); err != nil {
+			logger.Warn("Failed to send auth message via messenger, falling back to log", zap.Error(err))
+		}
 	}
-	// Log the auth URL just in case too
+	// Always log the auth URL as fallback
 	logger.Info(authMessage)
 
 	// Wait for callback
 	select {
 	case token := <-c.tokenChan:
-		logger.Info("Token received by auth flow", zap.Any(zapkey.Scopes, token.Extra("scope")), zap.Any(zapkey.Data, token))
+		ctx, fields := ctxutil.WithZapFields(context.Background(), zap.Any(zapkey.Scopes, token.Extra("scope")))
+		if log.VerboseLogsEnabled(ctx) {
+			fields = append(fields, zap.Any(zapkey.Data, token))
+		}
+		logger.Info("Token received by auth flow", fields...)
 		return token, nil
 	case <-time.After(5 * time.Minute):
 		return nil, fmt.Errorf("authentication timeout")
@@ -59,7 +68,11 @@ func (c *Client) callbackHandler() http.HandlerFunc {
 			http.Error(w, "Couldn't get token", http.StatusForbidden)
 			return
 		}
-		logger.Info("Callback received token", zap.Any(zapkey.Scopes, token.Extra("scope")), zap.Any(zapkey.Data, token))
+		ctx, fields := ctxutil.WithZapFields(r.Context(), zap.Any(zapkey.Scopes, token.Extra("scope")))
+		if log.VerboseLogsEnabled(ctx) {
+			fields = append(fields, zap.Any(zapkey.Data, token))
+		}
+		logger.Debug("Callback received token", fields...)
 
 		select {
 		case c.tokenChan <- token:
@@ -68,7 +81,7 @@ func (c *Client) callbackHandler() http.HandlerFunc {
 		}
 
 		if _, err := fmt.Fprintln(w, "Spotify authentication successful! You can close this window."); err != nil {
-			logger.Error("Failed to write response", zap.Error(err))
+			logger.With(zap.Error(err)).Error("Failed to write response", fields...)
 		}
 	}
 }
@@ -133,6 +146,10 @@ func (c *Client) loadToken() error {
 
 // isTokenValid checks if the current token is valid
 func (c *Client) isTokenValid() bool {
+	if c == nil {
+		logger.Error("Client is nil")
+		return false
+	}
 	return c.token != nil && c.token.Valid()
 }
 

@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"strconv"
 
 	"github.com/bwmarrin/discordgo"
 	"go.uber.org/zap"
@@ -12,6 +11,7 @@ import (
 	"discordbot/constants/envvar"
 	"discordbot/constants/zapkey"
 	"discordbot/discord/channel"
+	"discordbot/log"
 	"discordbot/spotify/track"
 	"discordbot/utils/ctxutil"
 )
@@ -106,11 +106,7 @@ func (h *MessageHandler) Handle(s *discordgo.Session, m *discordgo.MessageCreate
 	)
 
 	// Log full message data if verbose logs are enabled
-	verboseLogsEnabled, err := strconv.ParseBool(os.Getenv(envvar.VerboseLogsEnabled))
-	if err != nil {
-		logger.With(zap.Error(err)).Warn("Failed to parse verbose logs enabled", fields...)
-	}
-	if verboseLogsEnabled {
+	if log.VerboseLogsEnabled(ctx) {
 		logger.With(zap.Any(zapkey.Message, m)).Info("Full message data", fields...)
 	}
 

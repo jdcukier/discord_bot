@@ -51,8 +51,8 @@ func NewClient(opts ...Option) (*Client, error) {
 		}
 	}
 
-	// If a config wasn't provided, create the default config
-	if c.config == nil {
+	// If a config wasn't provided or is invalid, create the default config
+	if c.config == nil || c.config.Validate() != nil {
 		config, err := config.NewConfig()
 		if err != nil {
 			return nil, fmt.Errorf("failed to create config: %w", err)
@@ -125,4 +125,9 @@ func (c *Client) Start() error {
 
 func (c *Client) Stop() error {
 	return nil
+}
+
+// SetMessenger sets the message sender for the client
+func (c *Client) SetMessenger(messenger MessageSender) {
+	c.messenger = messenger
 }

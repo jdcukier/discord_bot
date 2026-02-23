@@ -60,19 +60,18 @@ func main() {
 	}
 	clients = append(clients, debugClient)
 
-	// Initialize a pointer for the spotify client. We'll assign it later.
-	// TODO: There's probably a better way to do this.
-	var spotifyClient *spotify.Client
-
-	// Initialize Discord client
-	discordClient := newDiscordClient(spotifyClient)
-	clients = append(clients, discordClient)
-
-	// Initialize Spotify client (needs server to be running)
-	spotifyClient, err = spotify.NewClient(spotify.WithMessenger(discordClient))
+	// Initialize Spotify client first (needs server to be running)
+	spotifyClient, err := spotify.NewClient()
 	if err != nil {
 		logger.Fatal("Failed to create Spotify client", zap.Error(err))
 	}
+
+	// Initialize Discord client with the spotify client
+	discordClient := newDiscordClient(spotifyClient)
+	clients = append(clients, discordClient)
+
+	// Update spotify client with discord messenger
+	spotifyClient.SetMessenger(discordClient)
 	clients = append(clients, spotifyClient)
 
 	// Start clients

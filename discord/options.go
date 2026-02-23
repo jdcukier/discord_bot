@@ -17,13 +17,7 @@ func WithConfig(config *config.Config) Option {
 
 func WithHandlers(handlers ...Handler) Option {
 	return func(c *Client) {
-		for _, handler := range handlers {
-			if handler == nil {
-				logger.Warn("nil handler provided")
-				continue
-			}
-			c.handlers = append(c.handlers, handlers...)
-		}
+		c.handlers = append(c.handlers, handlers...)
 	}
 }
 

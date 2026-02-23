@@ -3,14 +3,12 @@ package spotify
 import (
 	"context"
 	"fmt"
-	"os"
-	"strconv"
 
 	"github.com/jdcukier/spotify/v2"
 	"go.uber.org/zap"
 
-	"discordbot/constants/envvar"
 	"discordbot/constants/zapkey"
+	"discordbot/log"
 	"discordbot/spotify/track"
 	"discordbot/utils/ctxutil"
 )
@@ -50,11 +48,9 @@ func (c *Client) AddTracksToPlaylist(
 		zap.String(zapkey.UserID, currentUser.ID),
 	)
 
-	verboseLogsEnabled, err := strconv.ParseBool(os.Getenv(envvar.VerboseLogsEnabled))
-	if err != nil {
-		logger.With(zap.Error(err)).Warn("Failed to parse verbose logs enabled", fields...)
-	}
+	verboseLogsEnabled := log.VerboseLogsEnabled(ctx)
 	if verboseLogsEnabled {
+		logger.Info("Checking playlist info", fields...)
 		c.logPlaylistInfo(ctx, playlistID)
 	}
 
