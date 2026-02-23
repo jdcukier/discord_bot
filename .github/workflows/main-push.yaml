@@ -99,6 +99,8 @@ jobs:
   docker-cicd:
     needs: git-tag
     uses: ./.github/workflows/docker-cicd.yaml
+    with:
+      version: ${{ needs.git-tag.outputs.version }}
     secrets: inherit
 
   create-release:
