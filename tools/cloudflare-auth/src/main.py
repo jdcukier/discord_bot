@@ -50,7 +50,7 @@ async def _get_signing_key(env) -> str:
 def _require_env(name: str, env) -> str:
     value = getattr(env, name, None)
     if not value:
-        print(f"CRITICAL: Environment variable '{name}' is missing from env bindings!")
+        print("CRITICAL: Required environment binding is missing from env bindings!")
         raise HTTPException(status_code=500, detail=f"Server misconfiguration: {name} not set")
     return value
 
