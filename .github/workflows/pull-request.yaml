@@ -1,2 +1,11 @@
 name: Pull Request CI/CD Pipeline
 
+# Workflow triggers
+on:
+  # Trigger on pull request to any branch
+  pull_request:
+
+jobs:
+  go-cicd:
+    # Ensure binary builds and tests pass successfully
+    uses: ./.github/workflows/go-cicd.yaml
