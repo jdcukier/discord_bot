@@ -104,7 +104,7 @@ jobs:
     secrets: inherit
 
   create-release:
-    needs: docker-cicd
+    needs: [ git-tag, docker-cicd ]
     runs-on: ubuntu-latest
 
     steps:
