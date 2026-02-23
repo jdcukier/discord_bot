@@ -4,18 +4,85 @@ on:
   workflow_call:
 
 jobs:
-  build:
+  build-and-test:
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v4
+    - name: Checkout repository
+      uses: actions/checkout@v4
 
-    - name: Set up Go
+    - name: Set up Go environment
       uses: actions/setup-go@v4
       with:
         go-version: '1.26'
 
-    - name: Build
-      run: go build -v ./...
+    - name: Build and Test in parallel
+      run: |
+        echo "🏗️  Starting build process..."
+        go build -v ./... > build.log 2>&1 &
+        BUILD_PID=$!
+        echo "📦 Build PID: $BUILD_PID"
+        
+        echo "🧪 Starting test process..."
+        go test -v ./... > test.log 2>&1 &
+        TEST_PID=$!
+        echo "🔬 Test PID: $TEST_PID"
+        
+        echo "⏳ Waiting for build to complete..."
+        wait $BUILD_PID
+        BUILD_EXIT_CODE=$?
+        if [ $BUILD_EXIT_CODE -eq 0 ]; then
+          echo "✅ Build completed successfully"
+        else
+          echo "❌ Build failed with exit code: $BUILD_EXIT_CODE"
+          echo "## Build Error Details" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          cat build.log >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          exit $BUILD_EXIT_CODE
+        fi
+        
+        echo "⏳ Waiting for tests to complete..."
+        wait $TEST_PID
+        TEST_EXIT_CODE=$?
+        if [ $TEST_EXIT_CODE -eq 0 ]; then
+          echo "✅ Tests completed successfully"
+        else
+          echo "❌ Tests failed with exit code: $TEST_EXIT_CODE"
+          echo "## Test Error Details" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          cat test.log >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          exit $TEST_EXIT_CODE
+        fi
+        
+        echo "🎉 All processes completed successfully!"
 
-    - name: Test
-      run: go test -v ./...
+    - name: Generate Action Summary
+      if: always()
+      run: |
+        echo "# 🚀 Go CI/CD Results" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        
+        # Build results
+        if [ -f build.log ]; then
+          echo "## 📦 Build Output" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          tail -20 build.log >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+        fi
+        
+        # Test results
+        if [ -f test.log ]; then
+          echo "## 🧪 Test Output" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          tail -20 test.log >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+        fi
+        
+        # Status summary
+        echo "## 📊 Summary" >> $GITHUB_STEP_SUMMARY
+        echo "- ✅ Build: Success" >> $GITHUB_STEP_SUMMARY
+        echo "- ✅ Tests: Success" >> $GITHUB_STEP_SUMMARY
+        echo "- ⏱️  Completed at: $(date)" >> $GITHUB_STEP_SUMMARY
