@@ -5,6 +5,15 @@ on:
   # Trigger on pull request to any branch
   pull_request:
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# Workflow permissions
+permissions:
+  contents: read  # Required for git operations
+  packages: read  # Required for GitHub Packages
+
 jobs:
   go-cicd:
     # Ensure binary builds and tests pass successfully
