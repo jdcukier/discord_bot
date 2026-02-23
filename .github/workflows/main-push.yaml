@@ -7,9 +7,83 @@ on:
 jobs:
   go-cicd:
     # Ensure binary builds and tests pass successfully
-    uses: ./.github/workflows/go_cicd.yaml
+    uses: ./.github/workflows/go-cicd.yaml
+
+  git-tag:
+    # Only create git tag if go-cicd succeeds
+    needs: go-cicd
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0  # Fetch full history for proper git operations
+
+    - name: Auto-version and tag
+      run: |
+        # Get latest tag
+        LATEST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
+        
+        # Parse current version
+        CURRENT=$(echo $LATEST_TAG | sed 's/^v//')
+        IFS='.' read -ra PARTS <<< "$CURRENT"
+        MAJOR=${PARTS[0]}
+        MINOR=${PARTS[1]}
+        PATCH=${PARTS[2]}
+        
+        # Get commit messages since last tag
+        COMMITS=$(git log --pretty=format:"%s" $LATEST_TAG..HEAD)
+        
+        # Determine version bump
+        if echo "$COMMITS" | grep -q "BREAKING CHANGE"; then
+          MAJOR=$((MAJOR + 1))
+          MINOR=0
+          PATCH=0
+          BUMP_TYPE="major"
+        elif echo "$COMMITS" | grep -q "^feat:"; then
+          MINOR=$((MINOR + 1))
+          PATCH=0
+          BUMP_TYPE="minor"
+        else
+          PATCH=$((PATCH + 1))
+          BUMP_TYPE="patch"
+        fi
+        
+        NEW_TAG="v${MAJOR}.${MINOR}.${PATCH}"
+        
+        echo "🏷️  Version bump: $BUMP_TYPE ($LATEST_TAG → $NEW_TAG)"
+        echo "📝 Commits analyzed:"
+        echo "$COMMITS" | head -5
+        
+        # Create and push tag
+        git config --local user.email "action@github.com"
+        git config --local user.name "GitHub Action"
+        git tag -a $NEW_TAG -m "Auto-tag version $NEW_TAG ($BUMP_TYPE)"
+        git push origin $NEW_TAG
+        
+        echo "✅ Git tag $NEW_TAG created and pushed successfully!"
+        
+        # Output for potential use in other jobs
+        echo "new_tag=$NEW_TAG" >> $GITHUB_OUTPUT
+        echo "version=${MAJOR}.${MINOR}.${PATCH}" >> $GITHUB_OUTPUT
+      id: version
 
   docker-cicd:
-    # Only build and deploy Docker image if go-cicd job succeeded
-    needs: go-cicd
-    uses: ./.github/workflows/docker_cicd.yaml
+    # Only build and deploy Docker image if git-tag succeeds
+    needs: git-tag
+    uses: ./.github/workflows/docker-cicd.yaml
+
+  create-release:
+    # Only create GitHub release if docker-cicd succeeds
+    needs: docker-cicd
+    runs-on: ubuntu-latest
+    steps:
+    - name: Create GitHub Release
+      uses: actions/create-release@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        tag_name: ${{ needs.git-tag.outputs.version.outputs.new_tag }}
+        release_name: Release ${{ needs.git-tag.outputs.version.outputs.new_tag }}
+        draft: false
+        prerelease: false

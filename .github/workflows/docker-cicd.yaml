@@ -29,51 +29,6 @@ jobs:
         SPOTIFY_PLAYLIST_ID=${{ secrets.SPOTIFY_PLAYLIST_ID }}
         EOF
 
-    - name: Auto-version and tag
-      id: version
-      run: |
-        # Get latest tag
-        LATEST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
-        
-        # Parse current version
-        CURRENT=$(echo $LATEST_TAG | sed 's/^v//')
-        IFS='.' read -ra PARTS <<< "$CURRENT"
-        MAJOR=${PARTS[0]}
-        MINOR=${PARTS[1]}
-        PATCH=${PARTS[2]}
-        
-        # Get commit messages since last tag
-        COMMITS=$(git log --pretty=format:"%s" $LATEST_TAG..HEAD)
-        
-        # Determine version bump
-        if echo "$COMMITS" | grep -q "BREAKING CHANGE"; then
-          MAJOR=$((MAJOR + 1))
-          MINOR=0
-          PATCH=0
-          BUMP_TYPE="major"
-        elif echo "$COMMITS" | grep -q "^feat:"; then
-          MINOR=$((MINOR + 1))
-          PATCH=0
-          BUMP_TYPE="minor"
-        else
-          PATCH=$((PATCH + 1))
-          BUMP_TYPE="patch"
-        fi
-        
-        NEW_TAG="v${MAJOR}.${MINOR}.${PATCH}"
-        
-        echo "bump_type=$BUMP_TYPE" >> $GITHUB_OUTPUT
-        echo "new_tag=$NEW_TAG" >> $GITHUB_OUTPUT
-        echo "version=${MAJOR}.${MINOR}.${PATCH}" >> $GITHUB_OUTPUT
-        
-        echo "Version bump: $BUMP_TYPE ($LATEST_TAG → $NEW_TAG)"
-        
-        # Create and push tag
-        git config --local user.email "action@github.com"
-        git config --local user.name "GitHub Action"
-        git tag -a $NEW_TAG -m "Auto-tag version $NEW_TAG ($BUMP_TYPE)"
-        git push origin $NEW_TAG
-
     - name: Extract metadata
       id: meta
       uses: docker/metadata-action@v5
