@@ -71,6 +71,9 @@ jobs:
         # Output for potential use in other jobs
         echo "new_tag=$NEW_TAG" >> $GITHUB_OUTPUT
         echo "version=${MAJOR}.${MINOR}.${PATCH}" >> $GITHUB_OUTPUT
+        echo "commits<<EOF" >> $GITHUB_OUTPUT
+        echo "$COMMITS" >> $GITHUB_OUTPUT
+        echo "EOF" >> $GITHUB_OUTPUT
 
     - name: Generate Tag Summary
       if: always()
@@ -87,7 +90,7 @@ jobs:
         echo "" >> $GITHUB_STEP_SUMMARY
         echo "## 📋 Recent Commits" >> $GITHUB_STEP_SUMMARY
         echo '```' >> $GITHUB_STEP_SUMMARY
-        echo "$COMMITS" | head -10 >> $GITHUB_STEP_SUMMARY
+        echo "${{ steps.version.outputs.commits }}" | head -10 >> $GITHUB_STEP_SUMMARY
         echo '```' >> $GITHUB_STEP_SUMMARY
         echo "---" >> $GITHUB_STEP_SUMMARY
         echo "*Generated on $(date)*" >> $GITHUB_STEP_SUMMARY
