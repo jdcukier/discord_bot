@@ -1,24 +1,54 @@
-# Simple Dockerfile - just copy pre-built binary
-FROM alpine:latest
+# Multi-stage Dockerfile for Discord Bot
+# Build-time variables
+ARG APP_NAME=discordbot
+ARG APP_USER=botuser
+ARG APP_UID=1001
 
-# Install ca-certificates for HTTPS requests and tzdata
-RUN apk --no-cache add ca-certificates tzdata
+# Stage 1: Build the Go binary
+FROM golang:1.26-alpine AS builder
 
-# Create non-root user
-RUN addgroup -g 1001 -S discordbot && \
-    adduser -u 1001 -S discordbot -G discordbot
-
+# Set working directory
 WORKDIR /app
 
-# Copy the pre-built binary and .env file
-COPY main .
+# Copy go mod files first for better caching
+COPY go.mod go.sum ./
+
+# Download dependencies
+RUN go mod download
+
+# Copy source code
+COPY . .
+
+# Build the binary (statically linked for Alpine)
+RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o main ./cmd
+
+# Stage 2: Runtime container
+FROM alpine:latest
+
+# Import build-time variables
+ARG APP_NAME
+ARG APP_USER
+ARG APP_UID
+
+# Install runtime dependencies
+RUN apk --no-cache add ca-certificates tzdata wget
+
+# Create non-root user for security
+RUN addgroup -g ${APP_UID} -S ${APP_USER} && \
+    adduser -u ${APP_UID} -S ${APP_USER} -G ${APP_USER}
+
+# Set working directory
+WORKDIR /app
+
+# Copy binary from builder stage and .env file
+COPY --from=builder /app/main .
 COPY .env .
 
-# Change ownership to non-root user
-RUN chown discordbot:discordbot /app/main /app/.env
+# Set proper ownership
+RUN chown ${APP_USER}:${APP_USER} /app/main /app/.env
 
 # Switch to non-root user
-USER discordbot
+USER ${APP_USER}
 
 # Expose port
 EXPOSE 8080
