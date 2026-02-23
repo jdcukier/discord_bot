@@ -98,7 +98,6 @@ jobs:
 
   docker-cicd:
     needs: git-tag
-    if: startsWith(github.ref, 'refs/tags/')
     uses: ./.github/workflows/docker-cicd.yaml
     secrets: inherit
 
