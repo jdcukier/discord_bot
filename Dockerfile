@@ -5,7 +5,9 @@ ARG APP_USER=botuser
 ARG APP_UID=1001
 
 # Stage 1: Build the Go binary
-FROM golang:1.26-alpine AS builder
+FROM --platform=$BUILDPLATFORM golang:1.26-alpine AS builder
+ARG TARGETPLATFORM
+ARG BUILDPLATFORM
 
 # Set working directory
 WORKDIR /app
@@ -19,8 +21,9 @@ RUN go mod download
 # Copy source code
 COPY . .
 
-# Build the binary (statically linked for Alpine)
-RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o main ./cmd
+# Build the binary for target platform
+RUN CGO_ENABLED=0 GOOS=${TARGETPLATFORM%/*} GOARCH=${TARGETPLATFORM#*/} \
+    go build -a -installsuffix cgo -o main ./cmd
 
 # Stage 2: Runtime container
 FROM alpine:latest
