@@ -4,6 +4,10 @@ on:
   push:
     branches: [ main ]
 
+permissions:
+  contents: write  # Required for git push operations
+  packages: write  # Required for GitHub Packages
+
 jobs:
   go-cicd:
     # Ensure binary builds and tests pass successfully
@@ -20,6 +24,7 @@ jobs:
         fetch-depth: 0  # Fetch full history for proper git operations
 
     - name: Auto-version and tag
+      id: version
       run: |
         # Get latest tag
         LATEST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
@@ -66,7 +71,26 @@ jobs:
         # Output for potential use in other jobs
         echo "new_tag=$NEW_TAG" >> $GITHUB_OUTPUT
         echo "version=${MAJOR}.${MINOR}.${PATCH}" >> $GITHUB_OUTPUT
-      id: version
+
+    - name: Generate Tag Summary
+      if: always()
+      run: |
+        echo "# 🏷️ Git Tag Results" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "## 📊 Summary" >> $GITHUB_STEP_SUMMARY
+        echo "- 🏷️ **Tag Created**: ${{ steps.version.outcome == 'success' && '✅ Success' || '❌ Failed' }}" >> $GITHUB_STEP_SUMMARY
+        if [ "${{ steps.version.outcome }}" = "success" ]; then
+          echo "- 📦 **New Version**: ${{ steps.version.outputs.new_tag }}" >> $GITHUB_STEP_SUMMARY
+          echo "- 📝 **Bump Type**: $BUMP_TYPE" >> $GITHUB_STEP_SUMMARY
+          echo "- 🔄 **Previous**: $LATEST_TAG" >> $GITHUB_STEP_SUMMARY
+        fi
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "## 📋 Recent Commits" >> $GITHUB_STEP_SUMMARY
+        echo '```' >> $GITHUB_STEP_SUMMARY
+        echo "$COMMITS" | head -10 >> $GITHUB_STEP_SUMMARY
+        echo '```' >> $GITHUB_STEP_SUMMARY
+        echo "---" >> $GITHUB_STEP_SUMMARY
+        echo "*Generated on $(date)*" >> $GITHUB_STEP_SUMMARY
 
   docker-cicd:
     # Only build and deploy Docker image if git-tag succeeds
@@ -79,6 +103,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - name: Create GitHub Release
+      id: release
       uses: actions/create-release@v1
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -87,3 +112,26 @@ jobs:
         release_name: Release ${{ needs.git-tag.outputs.version.outputs.new_tag }}
         draft: false
         prerelease: false
+
+    - name: Generate Release Summary
+      if: always()
+      run: |
+        echo "# 🚀 GitHub Release Results" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "## 📊 Summary" >> $GITHUB_STEP_SUMMARY
+        echo "- 🚀 **Release Created**: ${{ steps.release.outcome == 'success' && '✅ Success' || '❌ Failed' }}" >> $GITHUB_STEP_SUMMARY
+        if [ "${{ steps.release.outcome }}" = "success" ]; then
+          echo "- 🏷️ **Release Tag**: ${{ needs.git-tag.outputs.version.outputs.new_tag }}" >> $GITHUB_STEP_SUMMARY
+          echo "- 🔗 **Release URL**: [View Release](https://github.com/${{ github.repository }}/releases/tag/${{ needs.git-tag.outputs.version.outputs.new_tag }})" >> $GITHUB_STEP_SUMMARY
+        fi
+        echo "- 📦 **Docker Status**: ${{ needs.docker-cicd.result == 'success' && '✅ Deployed' || '❌ Failed' }}" >> $GITHUB_STEP_SUMMARY
+        echo "- 🧪 **Tests Status**: ${{ needs.go-cicd.result == 'success' && '✅ Passed' || '❌ Failed' }}" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "## 🎉 Complete Pipeline" >> $GITHUB_STEP_SUMMARY
+        echo "✅ All jobs completed successfully!" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "## 📋 Quick Links" >> $GITHUB_STEP_SUMMARY
+        echo "- 🐳 [Docker Hub](https://hub.docker.com/r/jdcukier/discord-bot)" >> $GITHUB_STEP_SUMMARY
+        echo "- 📦 [GitHub Releases](https://github.com/${{ github.repository }}/releases)" >> $GITHUB_STEP_SUMMARY
+        echo "---" >> $GITHUB_STEP_SUMMARY
+        echo "*Generated on $(date)*" >> $GITHUB_STEP_SUMMARY

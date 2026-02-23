@@ -83,6 +83,27 @@ jobs:
         
         # Status summary
         echo "## 📊 Summary" >> $GITHUB_STEP_SUMMARY
-        echo "- ✅ Build: Success" >> $GITHUB_STEP_SUMMARY
-        echo "- ✅ Tests: Success" >> $GITHUB_STEP_SUMMARY
+        
+        # Check build.log for success/failure
+        if [ -f build.log ]; then
+          if grep -q "build completed successfully" build.log; then
+            echo "- ✅ Build: Success" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "- ❌ Build: Failed" >> $GITHUB_STEP_SUMMARY
+          fi
+        else
+          echo "- ❌ Build: Failed (no log)" >> $GITHUB_STEP_SUMMARY
+        fi
+        
+        # Check test.log for success/failure  
+        if [ -f test.log ]; then
+          if grep -q "tests completed successfully" test.log; then
+            echo "- ✅ Tests: Success" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "- ❌ Tests: Failed" >> $GITHUB_STEP_SUMMARY
+          fi
+        else
+          echo "- ❌ Tests: Failed (no log)" >> $GITHUB_STEP_SUMMARY
+        fi
+        
         echo "- ⏱️  Completed at: $(date)" >> $GITHUB_STEP_SUMMARY
