@@ -4,134 +4,139 @@ on:
   push:
     branches: [ main ]
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
-  contents: write  # Required for git push operations
-  packages: write  # Required for GitHub Packages
+  contents: write
+  packages: write
+  id-token: write
 
 jobs:
   go-cicd:
-    # Ensure binary builds and tests pass successfully
     uses: ./.github/workflows/go-cicd.yaml
 
   git-tag:
-    # Only create git tag if go-cicd succeeds
     needs: go-cicd
     runs-on: ubuntu-latest
+
+    outputs:
+      new_tag: ${{ steps.version.outputs.new_tag }}
+      version: ${{ steps.version.outputs.version }}
+      bump_type: ${{ steps.version.outputs.bump_type }}
+      previous_tag: ${{ steps.version.outputs.previous_tag }}
+      commits: ${{ steps.version.outputs.commits }}
+
     steps:
-    - name: Checkout repository
-      uses: actions/checkout@v4
-      with:
-        fetch-depth: 0  # Fetch full history for proper git operations
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-    - name: Auto-version and tag
-      id: version
-      run: |
-        # Get latest tag
-        LATEST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
-        
-        # Parse current version
-        CURRENT=$(echo $LATEST_TAG | sed 's/^v//')
-        IFS='.' read -ra PARTS <<< "$CURRENT"
-        MAJOR=${PARTS[0]}
-        MINOR=${PARTS[1]}
-        PATCH=${PARTS[2]}
-        
-        # Get commit messages since last tag
-        COMMITS=$(git log --pretty=format:"%s" $LATEST_TAG..HEAD)
-        
-        # Determine version bump
-        if echo "$COMMITS" | grep -q "BREAKING CHANGE"; then
-          MAJOR=$((MAJOR + 1))
-          MINOR=0
-          PATCH=0
-          BUMP_TYPE="major"
-        elif echo "$COMMITS" | grep -q "^feat:"; then
-          MINOR=$((MINOR + 1))
-          PATCH=0
-          BUMP_TYPE="minor"
-        else
-          PATCH=$((PATCH + 1))
-          BUMP_TYPE="patch"
-        fi
-        
-        NEW_TAG="v${MAJOR}.${MINOR}.${PATCH}"
-        
-        echo "🏷️  Version bump: $BUMP_TYPE ($LATEST_TAG → $NEW_TAG)"
-        echo "📝 Commits analyzed:"
-        echo "$COMMITS" | head -5
-        
-        # Create and push tag
-        git config --local user.email "action@github.com"
-        git config --local user.name "GitHub Action"
-        git tag -a $NEW_TAG -m "Auto-tag version $NEW_TAG ($BUMP_TYPE)"
-        git push origin $NEW_TAG
-        
-        echo "✅ Git tag $NEW_TAG created and pushed successfully!"
-        
-        # Output for potential use in other jobs
-        echo "new_tag=$NEW_TAG" >> $GITHUB_OUTPUT
-        echo "version=${MAJOR}.${MINOR}.${PATCH}" >> $GITHUB_OUTPUT
+      - name: Auto-version and tag
+        id: version
+        run: |
+          LATEST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
 
-    - name: Generate Tag Summary
-      if: always()
-      run: |
-        echo "# 🏷️ Git Tag Results" >> $GITHUB_STEP_SUMMARY
-        echo "" >> $GITHUB_STEP_SUMMARY
-        echo "## 📊 Summary" >> $GITHUB_STEP_SUMMARY
-        echo "- 🏷️ **Tag Created**: ${{ steps.version.outcome == 'success' && '✅ Success' || '❌ Failed' }}" >> $GITHUB_STEP_SUMMARY
-        if [ "${{ steps.version.outcome }}" = "success" ]; then
-          echo "- 📦 **New Version**: ${{ steps.version.outputs.new_tag }}" >> $GITHUB_STEP_SUMMARY
-          echo "- 📝 **Bump Type**: $BUMP_TYPE" >> $GITHUB_STEP_SUMMARY
-          echo "- 🔄 **Previous**: $LATEST_TAG" >> $GITHUB_STEP_SUMMARY
-        fi
-        echo "" >> $GITHUB_STEP_SUMMARY
-        echo "## 📋 Recent Commits" >> $GITHUB_STEP_SUMMARY
-        echo '```' >> $GITHUB_STEP_SUMMARY
-        echo "$COMMITS" | head -10 >> $GITHUB_STEP_SUMMARY
-        echo '```' >> $GITHUB_STEP_SUMMARY
-        echo "---" >> $GITHUB_STEP_SUMMARY
-        echo "*Generated on $(date)*" >> $GITHUB_STEP_SUMMARY
+          CURRENT=$(echo $LATEST_TAG | sed 's/^v//')
+          IFS='.' read -ra PARTS <<< "$CURRENT"
+          MAJOR=${PARTS[0]}
+          MINOR=${PARTS[1]}
+          PATCH=${PARTS[2]}
+
+          COMMITS=$(git log --pretty=format:"%s" $LATEST_TAG..HEAD)
+
+          if echo "$COMMITS" | grep -q "+semver:major"; then
+            MAJOR=$((MAJOR + 1))
+            MINOR=0
+            PATCH=0
+            BUMP_TYPE="major"
+          elif echo "$COMMITS" | grep -q "+semver:minor"; then
+            MINOR=$((MINOR + 1))
+            PATCH=0
+            BUMP_TYPE="minor"
+          else
+            PATCH=$((PATCH + 1))
+            BUMP_TYPE="patch"
+          fi
+
+          NEW_TAG="v${MAJOR}.${MINOR}.${PATCH}"
+
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          git tag -a $NEW_TAG -m "Auto-tag version $NEW_TAG ($BUMP_TYPE)"
+          git push origin $NEW_TAG
+
+          echo "new_tag=$NEW_TAG" >> $GITHUB_OUTPUT
+          echo "version=${MAJOR}.${MINOR}.${PATCH}" >> $GITHUB_OUTPUT
+          echo "bump_type=$BUMP_TYPE" >> $GITHUB_OUTPUT
+          echo "previous_tag=$LATEST_TAG" >> $GITHUB_OUTPUT
+          echo "commits<<EOF" >> $GITHUB_OUTPUT
+          echo "$COMMITS" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Generate Tag Summary
+        if: always()
+        run: |
+          echo "# 🏷️ Git Tag Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## 📊 Summary" >> $GITHUB_STEP_SUMMARY
+          echo "- 🏷️ **Tag Created**: ${{ steps.version.outcome == 'success' && '✅ Success' || '❌ Failed' }}" >> $GITHUB_STEP_SUMMARY
+          if [ "${{ steps.version.outcome }}" = "success" ]; then
+            echo "- 📦 **New Version**: ${{ steps.version.outputs.new_tag }}" >> $GITHUB_STEP_SUMMARY
+            echo "- 📝 **Bump Type**: ${{ steps.version.outputs.bump_type }}" >> $GITHUB_STEP_SUMMARY
+            echo "- 🔄 **Previous**: ${{ steps.version.outputs.previous_tag }}" >> $GITHUB_STEP_SUMMARY
+          fi
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## 📋 Recent Commits" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "${{ steps.version.outputs.commits }}" | head -10 >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "---" >> $GITHUB_STEP_SUMMARY
+          echo "*Generated on $(date)*" >> $GITHUB_STEP_SUMMARY
 
   docker-cicd:
-    # Only build and deploy Docker image if git-tag succeeds
     needs: git-tag
     uses: ./.github/workflows/docker-cicd.yaml
+    with:
+      version: ${{ needs.git-tag.outputs.version }}
+    secrets: inherit
 
   create-release:
-    # Only create GitHub release if docker-cicd succeeds
-    needs: docker-cicd
+    needs: [ git-tag, docker-cicd ]
     runs-on: ubuntu-latest
-    steps:
-    - name: Create GitHub Release
-      id: release
-      uses: actions/create-release@v1
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      with:
-        tag_name: ${{ needs.git-tag.outputs.version.outputs.new_tag }}
-        release_name: Release ${{ needs.git-tag.outputs.version.outputs.new_tag }}
-        draft: false
-        prerelease: false
 
-    - name: Generate Release Summary
-      if: always()
-      run: |
-        echo "# 🚀 GitHub Release Results" >> $GITHUB_STEP_SUMMARY
-        echo "" >> $GITHUB_STEP_SUMMARY
-        echo "## 📊 Summary" >> $GITHUB_STEP_SUMMARY
-        echo "- 🚀 **Release Created**: ${{ steps.release.outcome == 'success' && '✅ Success' || '❌ Failed' }}" >> $GITHUB_STEP_SUMMARY
-        if [ "${{ steps.release.outcome }}" = "success" ]; then
-          echo "- 🏷️ **Release Tag**: ${{ needs.git-tag.outputs.version.outputs.new_tag }}" >> $GITHUB_STEP_SUMMARY
-          echo "- 🔗 **Release URL**: [View Release](https://github.com/${{ github.repository }}/releases/tag/${{ needs.git-tag.outputs.version.outputs.new_tag }})" >> $GITHUB_STEP_SUMMARY
-        fi
-        echo "- 📦 **Docker Status**: ${{ needs.docker-cicd.result == 'success' && '✅ Deployed' || '❌ Failed' }}" >> $GITHUB_STEP_SUMMARY
-        echo "- 🧪 **Tests Status**: ${{ needs.go-cicd.result == 'success' && '✅ Passed' || '❌ Failed' }}" >> $GITHUB_STEP_SUMMARY
-        echo "" >> $GITHUB_STEP_SUMMARY
-        echo "## 🎉 Complete Pipeline" >> $GITHUB_STEP_SUMMARY
-        echo "✅ All jobs completed successfully!" >> $GITHUB_STEP_SUMMARY
-        echo "" >> $GITHUB_STEP_SUMMARY
-        echo "## 📋 Quick Links" >> $GITHUB_STEP_SUMMARY
-        echo "- 🐳 [Docker Hub](https://hub.docker.com/r/jdcukier/discord-bot)" >> $GITHUB_STEP_SUMMARY
-        echo "- 📦 [GitHub Releases](https://github.com/${{ github.repository }}/releases)" >> $GITHUB_STEP_SUMMARY
-        echo "---" >> $GITHUB_STEP_SUMMARY
-        echo "*Generated on $(date)*" >> $GITHUB_STEP_SUMMARY
+    steps:
+      - name: Create GitHub Release
+        id: release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.git-tag.outputs.new_tag }}
+          name: Release ${{ needs.git-tag.outputs.new_tag }}
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Generate Release Summary
+        if: always()
+        run: |
+          echo "# 🚀 GitHub Release Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## 📊 Summary" >> $GITHUB_STEP_SUMMARY
+          echo "- 🚀 **Release Created**: ${{ steps.release.outcome == 'success' && '✅ Success' || '❌ Failed' }}" >> $GITHUB_STEP_SUMMARY
+          if [ "${{ steps.release.outcome }}" = "success" ]; then
+            echo "- 🏷️ **Release Tag**: ${{ needs.git-tag.outputs.new_tag }}" >> $GITHUB_STEP_SUMMARY
+            echo "- 🔗 **Release URL**: https://github.com/${{ github.repository }}/releases/tag/${{ needs.git-tag.outputs.new_tag }}" >> $GITHUB_STEP_SUMMARY
+          fi
+          echo "- 📦 **Docker Status**: ${{ needs.docker-cicd.result == 'success' && '✅ Deployed' || '❌ Failed' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- 🧪 **Tests Status**: ${{ needs.go-cicd.result == 'success' && '✅ Passed' || '❌ Failed' }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## 🎉 Complete Pipeline" >> $GITHUB_STEP_SUMMARY
+          echo "✅ All jobs completed successfully!" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## 📋 Quick Links" >> $GITHUB_STEP_SUMMARY
+          echo "- 🐳 Docker Hub: https://hub.docker.com/r/jdcukier/discord-bot" >> $GITHUB_STEP_SUMMARY
+          echo "- 📦 GitHub Releases: https://github.com/${{ github.repository }}/releases" >> $GITHUB_STEP_SUMMARY
+          echo "---" >> $GITHUB_STEP_SUMMARY
+          echo "*Generated on $(date)*" >> $GITHUB_STEP_SUMMARY
