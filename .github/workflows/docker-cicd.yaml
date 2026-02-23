@@ -2,90 +2,95 @@ name: Docker CI/CD Workflow
 
 on:
   workflow_call:
+    inputs:
+      version:
+        required: true
+        type: string
 
 permissions:
-  packages: write  # Required for container registry
+  contents: read
+  packages: write
+  id-token: write
 
 env:
   DOCKER_REGISTRY: docker.io
-  DOCKER_IMAGE: jdcukier/discord-bot
+  DOCKER_IMAGE: jcukier/discord-bot
 
 jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
+    environment: build
+
     steps:
-    - name: Checkout
-      uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-    - name: Set up Docker Buildx
-      uses: docker/setup-buildx-action@v3
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
 
-    - name: Login to Docker Hub
-      uses: docker/login-action@v3
-      with:
-        username: ${{ secrets.DOCKER_USERNAME }}
-        password: ${{ secrets.DOCKER_PASSWORD }}
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
 
-    - name: Create .env file from secrets
-      run: |
-        cat > .env << EOF
-        # Discord Auth Vars
-        DISCORD_APP_ID=${{ secrets.DISCORD_APP_ID }}
-        DISCORD_TOKEN=${{ secrets.DISCORD_TOKEN }}
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@v3
 
-        # Discord Channel IDs
-        DISCORD_AUTH_CHANNEL_ID=${{ vars.DISCORD_AUTH_CHANNEL_ID }}
-        DISCORD_SONGS_CHANNEL_ID=${{ vars.DISCORD_SONGS_CHANNEL_ID }}
-        
-        # Spotify Auth Vars
-        SPOTIFY_APP_ID=${{ secrets.SPOTIFY_APP_ID }}
-        SPOTIFY_SECRET=${{ secrets.SPOTIFY_SECRET }}
-        SPOTIFY_REDIRECT_URI=${{ secrets.SPOTIFY_REDIRECT_URI }}
+      - name: Login to Docker Hub
+        id: login
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.DOCKER_REGISTRY }}
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
 
-        # Spotify Playlist IDs
-        SPOTIFY_PLAYLIST_ID=${{ vars.SPOTIFY_PLAYLIST_ID }}
-        EOF
+      - name: Parse version
+        id: version
+        run: |
+          VERSION="${{ inputs.version }}"
+          IFS='.' read -ra PARTS <<< "$VERSION"
+          MAJOR=${PARTS[0]}
+          MINOR=${PARTS[1]}
 
-    - name: Extract metadata
-      id: meta
-      uses: docker/metadata-action@v5
-      with:
-        images: ${{ env.DOCKER_IMAGE }}
-        tags: |
-          type=ref,event=branch
-          type=semver,pattern={{version}}
-          type=semver,pattern={{major}}.{{minor}}
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "major=$MAJOR" >> $GITHUB_OUTPUT
+          echo "minor=$MINOR" >> $GITHUB_OUTPUT
 
-    - name: Build and push multi-platform image
-      id: docker-build
-      uses: docker/build-push-action@v5
-      with:
-        context: .
-        platforms: linux/amd64,linux/arm64
-        push: true
-        tags: ${{ steps.meta.outputs.tags }}
-        labels: ${{ steps.meta.outputs.labels }}
-        cache-from: type=gha
-        cache-to: type=gha,mode=max
+      - name: Create .env file
+        run: |
+          cat > .env << EOF
+          DISCORD_APP_ID=${{ secrets.DISCORD_APP_ID }}
+          DISCORD_TOKEN=${{ secrets.DISCORD_TOKEN }}
+          SPOTIFY_APP_ID=${{ secrets.SPOTIFY_APP_ID }}
+          SPOTIFY_SECRET=${{ secrets.SPOTIFY_SECRET }}
+          SPOTIFY_REDIRECT_URI=${{ secrets.SPOTIFY_REDIRECT_URI }}
+          EOF
 
-    - name: Generate Docker Summary
-      if: always()
-      run: |
-        echo "# 🐳 Docker CI/CD Results" >> $GITHUB_STEP_SUMMARY
-        echo "" >> $GITHUB_STEP_SUMMARY
-        echo "## 📊 Summary" >> $GITHUB_STEP_SUMMARY
-        echo "- 🔐 **Docker Login**: ${{ steps.docker-build.outcome == 'success' && '✅ Success' || '❌ Failed' }}" >> $GITHUB_STEP_SUMMARY
-        echo "- 🏗️ **Image Build**: ${{ steps.docker-build.outcome == 'success' && '✅ Success' || '❌ Failed' }}" >> $GITHUB_STEP_SUMMARY
-        echo "- 📦 **Platforms**: linux/amd64, linux/arm64" >> $GITHUB_STEP_SUMMARY
-        echo "- 🏷️ **Registry**: ${{ env.DOCKER_REGISTRY }}/${{ env.DOCKER_IMAGE }}" >> $GITHUB_STEP_SUMMARY
-        echo "" >> $GITHUB_STEP_SUMMARY
-        
-        if [ "${{ steps.docker-build.outcome }}" = "success" ]; then
-          echo "## 🚀 Deployed Images" >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
-          echo "${{ steps.meta.outputs.tags }}" | tr ',' '\n' | sed 's/^/- /' >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
-        fi
-        
-        echo "---" >> $GITHUB_STEP_SUMMARY
-        echo "*Generated on $(date)*" >> $GITHUB_STEP_SUMMARY
+      - name: Build and push multi-platform image
+        id: docker-build
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          provenance: true
+          sbom: true
+          tags: |
+            ${{ env.DOCKER_IMAGE }}:${{ steps.version.outputs.version }}
+            ${{ env.DOCKER_IMAGE }}:${{ steps.version.outputs.major }}.${{ steps.version.outputs.minor }}
+            ${{ env.DOCKER_IMAGE }}:${{ steps.version.outputs.major }}
+            ${{ env.DOCKER_IMAGE }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Sign Docker image (keyless)
+        if: steps.docker-build.outcome == 'success'
+        run: |
+          cosign sign --yes ${{ env.DOCKER_IMAGE }}:${{ steps.version.outputs.version }}
+          cosign sign --yes ${{ env.DOCKER_IMAGE }}:latest
+
+      - name: Docker Summary
+        if: always()
+        run: |
+          echo "# 🐳 Docker Results" >> $GITHUB_STEP_SUMMARY
+          echo "- 🔐 Login: ${{ steps.login.outcome }}" >> $GITHUB_STEP_SUMMARY
+          echo "- 🏗 Build: ${{ steps.docker-build.outcome }}" >> $GITHUB_STEP_SUMMARY
+          echo "- 🔏 Signed: ${{ steps.docker-build.outcome == 'success' && 'Yes' || 'No' }}" >> $GITHUB_STEP_SUMMARY
