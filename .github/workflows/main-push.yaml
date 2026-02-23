@@ -95,46 +95,46 @@ jobs:
           echo "---" >> $GITHUB_STEP_SUMMARY
           echo "*Generated on $(date)*" >> $GITHUB_STEP_SUMMARY
 
-docker-cicd:
-  needs: git-tag
-  if: startsWith(github.ref, 'refs/tags/')
-  uses: ./.github/workflows/docker-cicd.yaml
-  secrets: inherit
+  docker-cicd:
+    needs: git-tag
+    if: startsWith(github.ref, 'refs/tags/')
+    uses: ./.github/workflows/docker-cicd.yaml
+    secrets: inherit
 
-create-release:
-  needs: docker-cicd
-  runs-on: ubuntu-latest
+  create-release:
+    needs: docker-cicd
+    runs-on: ubuntu-latest
 
-  steps:
-    - name: Create GitHub Release
-      id: release
-      uses: softprops/action-gh-release@v2
-      with:
-        tag_name: ${{ needs.git-tag.outputs.new_tag }}
-        name: Release ${{ needs.git-tag.outputs.new_tag }}
-        generate_release_notes: true
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Create GitHub Release
+        id: release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.git-tag.outputs.new_tag }}
+          name: Release ${{ needs.git-tag.outputs.new_tag }}
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-    - name: Generate Release Summary
-      if: always()
-      run: |
-        echo "# 🚀 GitHub Release Results" >> $GITHUB_STEP_SUMMARY
-        echo "" >> $GITHUB_STEP_SUMMARY
-        echo "## 📊 Summary" >> $GITHUB_STEP_SUMMARY
-        echo "- 🚀 **Release Created**: ${{ steps.release.outcome == 'success' && '✅ Success' || '❌ Failed' }}" >> $GITHUB_STEP_SUMMARY
-        if [ "${{ steps.release.outcome }}" = "success" ]; then
-          echo "- 🏷️ **Release Tag**: ${{ needs.git-tag.outputs.new_tag }}" >> $GITHUB_STEP_SUMMARY
-          echo "- 🔗 **Release URL**: https://github.com/${{ github.repository }}/releases/tag/${{ needs.git-tag.outputs.new_tag }}" >> $GITHUB_STEP_SUMMARY
-        fi
-        echo "- 📦 **Docker Status**: ${{ needs.docker-cicd.result == 'success' && '✅ Deployed' || '❌ Failed' }}" >> $GITHUB_STEP_SUMMARY
-        echo "- 🧪 **Tests Status**: ${{ needs.go-cicd.result == 'success' && '✅ Passed' || '❌ Failed' }}" >> $GITHUB_STEP_SUMMARY
-        echo "" >> $GITHUB_STEP_SUMMARY
-        echo "## 🎉 Complete Pipeline" >> $GITHUB_STEP_SUMMARY
-        echo "✅ All jobs completed successfully!" >> $GITHUB_STEP_SUMMARY
-        echo "" >> $GITHUB_STEP_SUMMARY
-        echo "## 📋 Quick Links" >> $GITHUB_STEP_SUMMARY
-        echo "- 🐳 Docker Hub: https://hub.docker.com/r/jdcukier/discord-bot" >> $GITHUB_STEP_SUMMARY
-        echo "- 📦 GitHub Releases: https://github.com/${{ github.repository }}/releases" >> $GITHUB_STEP_SUMMARY
-        echo "---" >> $GITHUB_STEP_SUMMARY
-        echo "*Generated on $(date)*" >> $GITHUB_STEP_SUMMARY
+      - name: Generate Release Summary
+        if: always()
+        run: |
+          echo "# 🚀 GitHub Release Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## 📊 Summary" >> $GITHUB_STEP_SUMMARY
+          echo "- 🚀 **Release Created**: ${{ steps.release.outcome == 'success' && '✅ Success' || '❌ Failed' }}" >> $GITHUB_STEP_SUMMARY
+          if [ "${{ steps.release.outcome }}" = "success" ]; then
+            echo "- 🏷️ **Release Tag**: ${{ needs.git-tag.outputs.new_tag }}" >> $GITHUB_STEP_SUMMARY
+            echo "- 🔗 **Release URL**: https://github.com/${{ github.repository }}/releases/tag/${{ needs.git-tag.outputs.new_tag }}" >> $GITHUB_STEP_SUMMARY
+          fi
+          echo "- 📦 **Docker Status**: ${{ needs.docker-cicd.result == 'success' && '✅ Deployed' || '❌ Failed' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- 🧪 **Tests Status**: ${{ needs.go-cicd.result == 'success' && '✅ Passed' || '❌ Failed' }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## 🎉 Complete Pipeline" >> $GITHUB_STEP_SUMMARY
+          echo "✅ All jobs completed successfully!" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## 📋 Quick Links" >> $GITHUB_STEP_SUMMARY
+          echo "- 🐳 Docker Hub: https://hub.docker.com/r/jdcukier/discord-bot" >> $GITHUB_STEP_SUMMARY
+          echo "- 📦 GitHub Releases: https://github.com/${{ github.repository }}/releases" >> $GITHUB_STEP_SUMMARY
+          echo "---" >> $GITHUB_STEP_SUMMARY
+          echo "*Generated on $(date)*" >> $GITHUB_STEP_SUMMARY
