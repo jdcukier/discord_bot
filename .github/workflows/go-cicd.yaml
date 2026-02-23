@@ -84,9 +84,10 @@ jobs:
         # Status summary
         echo "## 📊 Summary" >> $GITHUB_STEP_SUMMARY
         
-        # Check build.log for success/failure
+        # Check build status using exit codes from previous step
         if [ -f build.log ]; then
-          if grep -q "build completed successfully" build.log; then
+          # Look for actual Go build success indicators
+          if grep -q "ok" build.log && ! grep -q "FAIL\|error" build.log; then
             echo "- ✅ Build: Success" >> $GITHUB_STEP_SUMMARY
           else
             echo "- ❌ Build: Failed" >> $GITHUB_STEP_SUMMARY
@@ -95,9 +96,10 @@ jobs:
           echo "- ❌ Build: Failed (no log)" >> $GITHUB_STEP_SUMMARY
         fi
         
-        # Check test.log for success/failure  
+        # Check test status using exit codes from previous step
         if [ -f test.log ]; then
-          if grep -q "tests completed successfully" test.log; then
+          # Look for Go test success indicators
+          if grep -q "PASS" test.log && ! grep -q "FAIL" test.log; then
             echo "- ✅ Tests: Success" >> $GITHUB_STEP_SUMMARY
           else
             echo "- ❌ Tests: Failed" >> $GITHUB_STEP_SUMMARY

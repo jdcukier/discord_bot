@@ -5,6 +5,7 @@ on:
 
 permissions:
   packages: write  # Required for container registry
+  contents: read   # Required to access secrets
 
 env:
   DOCKER_REGISTRY: docker.io
