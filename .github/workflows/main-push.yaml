@@ -47,12 +47,12 @@ jobs:
 
           COMMITS=$(git log --pretty=format:"%s" $LATEST_TAG..HEAD)
 
-          if echo "$COMMITS" | grep -q "BREAKING CHANGE"; then
+          if echo "$COMMITS" | grep -q "+semver:major"; then
             MAJOR=$((MAJOR + 1))
             MINOR=0
             PATCH=0
             BUMP_TYPE="major"
-          elif echo "$COMMITS" | grep -q "^feat:"; then
+          elif echo "$COMMITS" | grep -q "+semver:minor"; then
             MINOR=$((MINOR + 1))
             PATCH=0
             BUMP_TYPE="minor"
