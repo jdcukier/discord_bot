@@ -29,11 +29,21 @@ jobs:
     - name: Create .env file from secrets
       run: |
         cat > .env << EOF
-        DISCORD_BOT_TOKEN=${{ secrets.DISCORD_BOT_TOKEN }}
-        SPOTIFY_ID=${{ secrets.SPOTIFY_ID }}
+        # Discord Auth Vars
+        DISCORD_APP_ID=${{ secrets.DISCORD_APP_ID }}
+        DISCORD_TOKEN=${{ secrets.DISCORD_TOKEN }}
+
+        # Discord Channel IDs
+        DISCORD_AUTH_CHANNEL_ID=${{ vars.DISCORD_AUTH_CHANNEL_ID }}
+        DISCORD_SONGS_CHANNEL_ID=${{ vars.DISCORD_SONGS_CHANNEL_ID }}
+        
+        # Spotify Auth Vars
+        SPOTIFY_APP_ID=${{ secrets.SPOTIFY_APP_ID }}
         SPOTIFY_SECRET=${{ secrets.SPOTIFY_SECRET }}
         SPOTIFY_REDIRECT_URI=${{ secrets.SPOTIFY_REDIRECT_URI }}
-        SPOTIFY_PLAYLIST_ID=${{ secrets.SPOTIFY_PLAYLIST_ID }}
+
+        # Spotify Playlist IDs
+        SPOTIFY_PLAYLIST_ID=${{ vars.SPOTIFY_PLAYLIST_ID }}
         EOF
 
     - name: Extract metadata
