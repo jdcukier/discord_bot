@@ -60,7 +60,7 @@ func main() {
 	}
 	clients = append(clients, debugClient)
 
-	// Initialize Spotify client first (needs server to be running)
+	// Initialize Spotify client
 	spotifyClient, err := spotify.NewClient()
 	if err != nil {
 		logger.Fatal("Failed to create Spotify client", zap.Error(err))
@@ -69,6 +69,9 @@ func main() {
 	// Initialize Discord client with the spotify client
 	discordClient := newDiscordClient(spotifyClient)
 	clients = append(clients, discordClient)
+
+	// Wire Discord health into the debug client's /health endpoint
+	debugClient.SetHealthChecker(discordClient)
 
 	// Update spotify client with discord messenger
 	spotifyClient.SetMessenger(discordClient)

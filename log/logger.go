@@ -27,7 +27,11 @@ func initLogger() *zap.Logger {
 
 // VerboseLogsEnabled returns true if verbose logs are enabled
 func VerboseLogsEnabled(ctx context.Context) bool {
-	verboseLogsEnabled, err := strconv.ParseBool(os.Getenv(envvar.VerboseLogsEnabled))
+	val := os.Getenv(envvar.VerboseLogsEnabled)
+	if val == "" {
+		return false
+	}
+	verboseLogsEnabled, err := strconv.ParseBool(val)
 	if err != nil {
 		fields := ctxutil.ZapFields(ctx)
 		Logger.With(zap.Error(err)).Warn("Failed to parse verbose logs enabled", fields...)

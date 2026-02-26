@@ -105,6 +105,7 @@ jspm_packages/
 .env
 .env.local
 .env.*.local
+.wrangler
 
 # Editor/IDE
 .idea/

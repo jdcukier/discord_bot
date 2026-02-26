@@ -27,7 +27,7 @@ const (
 
 // PlaylistAdder is an interface for adding tracks to a playlist
 type PlaylistAdder interface {
-	AddTracksToPlaylist(ctx context.Context, playlistID string, trackIDs []string) error
+	AddTracksToPlaylist(ctx context.Context, userID string, playlistID string, trackURLs []string) error
 }
 
 // --- Message Sender ---
@@ -100,14 +100,13 @@ func (h *MessageHandler) Handle(s *discordgo.Session, m *discordgo.MessageCreate
 
 	ctx, fields = ctxutil.WithZapFields(
 		context.Background(),
-		zap.String(zapkey.Content, m.Content),
 		zap.String(zapkey.UserName, m.Author.Username),
 		zap.String(zapkey.UserID, m.Author.ID),
 	)
 
 	// Log full message data if verbose logs are enabled
 	if log.VerboseLogsEnabled(ctx) {
-		logger.With(zap.Any(zapkey.Message, m)).Info("Full message data", fields...)
+		logger.With(zap.String(zapkey.Content, m.Content), zap.Any(zapkey.Message, m)).Info("Full message data", fields...)
 	}
 
 	// Ignore bot messages
@@ -250,7 +249,7 @@ func (a *AddTracksToPlaylist) Execute(ctx context.Context) {
 		zap.String(zapkey.PlaylistID, playlistID),
 	)
 
-	if err := a.playlistAdder.AddTracksToPlaylist(ctx, playlistID, trackURLs); err != nil {
+	if err := a.playlistAdder.AddTracksToPlaylist(ctx, a.event.Author.ID, playlistID, trackURLs); err != nil {
 		logger.With(zap.Error(err)).Error("Failed to add tracks to playlist", fields...)
 		return
 	}
