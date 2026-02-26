@@ -118,6 +118,14 @@ func (c *Client) Validate() error {
 	return nil
 }
 
+// Healthy returns true if the Discord session is connected and has exchanged
+// at least one heartbeat with the gateway.
+func (c *Client) Healthy() bool {
+	return c.session != nil &&
+		c.session.DataReady &&
+		c.session.HeartbeatLatency() > 0
+}
+
 // ---- Start/Stop ----
 
 // Start the discord client

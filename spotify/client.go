@@ -2,16 +2,18 @@ package spotify
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
+	"sync"
 
 	"github.com/jdcukier/spotify/v2"
-	auth "github.com/jdcukier/spotify/v2/auth"
 	"go.uber.org/zap"
-	"golang.org/x/oauth2"
 
 	"discordbot/constants/zapkey"
+	"discordbot/discord/channel"
 	"discordbot/spotify/config"
+	"discordbot/spotify/worker"
 )
 
 // MessageSender is an interface for posting messages
@@ -22,27 +24,31 @@ type MessageSender interface {
 	SendMessage(ctx context.Context, channelType string, message string) error
 }
 
+// pendingEntry holds queued post-auth callbacks for one user.
+type pendingEntry struct {
+	callbacks []func(context.Context)
+}
+
 // Client represents a spotify client
 type Client struct {
 	// Clients
-	api       *spotify.Client
 	messenger MessageSender
 
 	// Configuration
 	config *config.Config
 
-	// Authentication
-	authenticator *auth.Authenticator
-	tokenChan     chan *oauth2.Token
-	token         *oauth2.Token
+	// Cloudflare Worker client
+	workerClient *worker.Client
+
+	// Per-user auth tracking. authMu protects authenticatingUsers and each entry's callbacks.
+	authMu              sync.Mutex
+	authenticatingUsers map[string]*pendingEntry
 }
 
 // NewClient initializes Spotify client using Authorization Code Flow.
 func NewClient(opts ...Option) (*Client, error) {
 	// Initialize client
-	c := &Client{
-		tokenChan: make(chan *oauth2.Token, 1),
-	}
+	c := &Client{}
 
 	// Apply options to override defaults
 	for _, opt := range opts {
@@ -60,16 +66,14 @@ func NewClient(opts ...Option) (*Client, error) {
 		c.config = config
 	}
 
-	// Initialize authenticator
-	c.authenticator = auth.New(
-		auth.WithRedirectURL(c.config.RedirectURI),
-		auth.WithScopes(
-			auth.ScopePlaylistModifyPublic,
-			auth.ScopePlaylistModifyPrivate,
-		),
-		auth.WithClientID(c.config.ClientID),
-		auth.WithClientSecret(c.config.ClientSecret),
+	// Cloudflare Access credentials are passed to the worker client
+	// The worker client attaches them as headers on every request
+	c.workerClient = worker.NewClient(
+		c.config.WorkerURL,
+		c.config.CFAccessClientID,
+		c.config.CFAccessClientSecret,
 	)
+	c.authenticatingUsers = make(map[string]*pendingEntry)
 
 	return c, nil
 }
@@ -82,44 +86,7 @@ func (c *Client) String() string {
 // -- Start/Stop ---
 
 func (c *Client) Start() error {
-	// Register handlers
-	http.HandleFunc("/spotify/callback", c.callbackHandler())
-
-	// Try to load existing token first
-	if err := c.loadToken(); err != nil {
-		logger.Error("Failed to load token", zap.Error(err))
-		return fmt.Errorf("failed to load spotify token: %w", err)
-	}
-
-	// If no token exists, start auth flow
-	if c.token == nil {
-		logger.Info("No existing token found, starting authentication flow")
-		token, err := c.authenticate()
-		if err != nil {
-			return fmt.Errorf("failed to authenticate spotify client: %w", err)
-		}
-		c.token = token
-		if err := c.saveToken(); err != nil {
-			logger.Error("Failed to save token", zap.Error(err))
-			return fmt.Errorf("failed to save spotify token: %w", err)
-		}
-	}
-
-	// Log the scopes in the token
-	logger.Info("Spotify token loaded", zap.Any(zapkey.Scopes, c.token.Extra("scope")))
-
-	// Initialize API
-	httpClient := c.authenticator.Client(context.Background(), c.token)
-	c.api = spotify.New(httpClient)
-
-	// Test authentication by getting current user
-	user, err := c.api.CurrentUser(context.Background())
-	if err != nil {
-		logger.Error("Spotify authentication test failed", zap.Error(err))
-		return fmt.Errorf("spotify authentication failed: %w", err)
-	}
-	logger.Info("Spotify authentication successful", zap.String(zapkey.UserName, user.DisplayName), zap.String(zapkey.UserID, user.ID))
-
+	logger.Info("Spotify client started; auth triggers on first song request per user")
 	return nil
 }
 
@@ -130,4 +97,103 @@ func (c *Client) Stop() error {
 // SetMessenger sets the message sender for the client
 func (c *Client) SetMessenger(messenger MessageSender) {
 	c.messenger = messenger
+}
+
+// spotifyClientForUser creates a per-call Spotify SDK client for the given Discord user.
+func (c *Client) spotifyClientForUser(userID string) *spotify.Client {
+	t := &workerTransport{
+		workerClient: c.workerClient,
+		userID:       userID,
+		base:         http.DefaultTransport,
+	}
+	return spotify.New(&http.Client{Transport: t})
+}
+
+// triggerAuthIfNeeded starts the OAuth flow in a background goroutine for the given user.
+// If an auth flow is already running for this user, onSuccess is queued and will be called
+// after auth completes. If auth fails, all queued callbacks are discarded and the user is
+// notified to post their track again.
+func (c *Client) triggerAuthIfNeeded(ctx context.Context, userID string, onSuccess func(context.Context)) {
+	c.authMu.Lock()
+	entry, exists := c.authenticatingUsers[userID]
+	if exists {
+		if onSuccess != nil {
+			entry.callbacks = append(entry.callbacks, onSuccess)
+		}
+		c.authMu.Unlock()
+		logger.Info("OAuth flow already in progress for user, queuing callback",
+			zap.String(zapkey.UserID, userID))
+		return
+	}
+	entry = &pendingEntry{}
+	if onSuccess != nil {
+		entry.callbacks = []func(context.Context){onSuccess}
+	}
+	c.authenticatingUsers[userID] = entry
+	c.authMu.Unlock()
+
+	go func() {
+		authCtx := context.Background()
+		if err := c.authenticate(authCtx, userID); err != nil {
+			// Drain callbacks atomically with the map delete. We intentionally do not
+			// call them: the original requests are no longer retryable (auth failed),
+			// and calling them would re-enter the auth flow.
+			c.authMu.Lock()
+			delete(c.authenticatingUsers, userID)
+			entry.callbacks = nil
+			c.authMu.Unlock()
+
+			logger.Error("Spotify OAuth flow failed", zap.Error(err), zap.String(zapkey.UserID, userID))
+			c.reportToDiscord(authCtx, fmt.Sprintf(
+				"❌ <@%s> Spotify authentication failed: %v\n"+
+					"Post a track again to retry.", userID, err))
+			return
+		}
+
+		// Drain all queued callbacks atomically with the map delete so no concurrent
+		// caller can append to this entry after we have removed it.
+		c.authMu.Lock()
+		delete(c.authenticatingUsers, userID)
+		callbacks := entry.callbacks
+		entry.callbacks = nil
+		c.authMu.Unlock()
+
+		logger.Info("Spotify OAuth flow completed successfully", zap.String(zapkey.UserID, userID))
+		if len(callbacks) == 0 {
+			// Feedback for when the user has authenticated without any songs pending
+			c.reportToDiscord(authCtx, fmt.Sprintf("✅ <@%s> Spotify connected successfully!", userID))
+		} else {
+			for _, cb := range callbacks {
+				cb(authCtx)
+			}
+		}
+	}()
+}
+
+// handleSpotifyError reports errors to Discord and re-triggers auth if needed.
+func (c *Client) handleSpotifyError(ctx context.Context, err error, operation string, userID string) {
+	if err == nil {
+		return
+	}
+	if errors.Is(err, worker.ErrAuthRequired) {
+		logger.Warn("Spotify auth required; triggering re-authentication",
+			zap.Error(err), zap.String(zapkey.UserID, userID))
+		c.reportToDiscord(ctx, fmt.Sprintf(
+			"⚠️ <@%s> Spotify session expired or not connected. Re-authentication started — "+
+				"check this channel for the login link.", userID))
+		c.triggerAuthIfNeeded(ctx, userID, nil)
+		return
+	}
+	logger.Error("Spotify operation failed",
+		zap.String("operation", operation), zap.Error(err), zap.String(zapkey.UserID, userID))
+	c.reportToDiscord(ctx, fmt.Sprintf("❌ <@%s> Spotify error (%s): %v", userID, operation, err))
+}
+
+func (c *Client) reportToDiscord(ctx context.Context, message string) {
+	if c.messenger == nil {
+		return
+	}
+	if err := c.messenger.SendMessage(ctx, channel.Auth.String(), message); err != nil {
+		logger.Warn("Failed to post Spotify status to Discord", zap.Error(err))
+	}
 }

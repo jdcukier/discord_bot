@@ -12,36 +12,45 @@ import (
 	"discordbot/utils/ctxutil"
 )
 
-// Playlist gets metadata about the specified playlist from spotify.
-// Note: This does not include the list of tracks. Use PlaylistItems to get the list of tracks.
-func (c *Client) Playlist(ctx context.Context, playlistID string) (*spotify.FullPlaylist, error) {
-	if c.api == nil {
-		return nil, fmt.Errorf("spotify client not initialized")
-	}
+// playlist gets metadata about the specified playlist from spotify.
+// Note: This does not include the list of tracks. Use allPlaylistTrackIDs to get the full set of track IDs.
+func (c *Client) playlist(ctx context.Context, api *spotify.Client, playlistID string) (*spotify.FullPlaylist, error) {
 	if playlistID == "" {
 		return nil, fmt.Errorf("no playlist ID provided")
 	}
-	return c.api.GetPlaylist(ctx, spotify.ID(playlistID))
+	return api.GetPlaylist(ctx, spotify.ID(playlistID))
 }
 
-// PlaylistItems gets a list of tracks saved in the specified playlist.
-func (c *Client) PlaylistItems(ctx context.Context, playlistID string) (*spotify.PlaylistItemPage, error) {
-	if c.api == nil {
-		return nil, fmt.Errorf("spotify client not initialized")
-	}
+// allPlaylistTrackIDs fetches all track IDs in a playlist, paginating through every page.
+func (c *Client) allPlaylistTrackIDs(ctx context.Context, api *spotify.Client, playlistID string) (map[spotify.ID]struct{}, error) {
 	if playlistID == "" {
 		return nil, fmt.Errorf("no playlist ID provided")
 	}
-	return c.api.GetPlaylistItems(ctx, spotify.ID(playlistID))
+	existing := make(map[spotify.ID]struct{})
+	page, err := api.GetPlaylistItems(ctx, spotify.ID(playlistID))
+	for ; err == nil; err = api.NextPage(ctx, page) {
+		for _, item := range page.Items {
+			if item.Item.Track != nil {
+				existing[item.Item.Track.ID] = struct{}{}
+			}
+		}
+		if page.Next == "" {
+			break
+		}
+	}
+	if err != nil {
+		return nil, err
+	}
+	return existing, nil
 }
 
 // logPlaylistInfo logs information about the specified playlist.
-func (c *Client) logPlaylistInfo(ctx context.Context, playlistID string) {
+func (c *Client) logPlaylistInfo(ctx context.Context, api *spotify.Client, playlistID string) {
 	// Logging metadata
 	fields := ctxutil.ZapFields(ctx)
 
 	// Get playlist
-	playlist, err := c.Playlist(ctx, playlistID)
+	pl, err := c.playlist(ctx, api, playlistID)
 	if err != nil {
 		logger.With(zap.Error(err)).Error("Cannot access playlist", fields...)
 		return
@@ -49,7 +58,7 @@ func (c *Client) logPlaylistInfo(ctx context.Context, playlistID string) {
 
 	// Log playlist info
 	logger.With(
-		zap.Any(zapkey.Data, playlist),
-		zap.String(zapkey.PlaylistOwnerID, playlist.Owner.ID),
+		zap.Any(zapkey.Data, pl),
+		zap.String(zapkey.PlaylistOwnerID, pl.Owner.ID),
 	).Info("Playlist access verified", fields...)
 }

@@ -12,12 +12,24 @@ import (
 	"discordbot/constants/zapkey"
 )
 
+// HealthChecker reports whether a dependent service is healthy.
+type HealthChecker interface {
+	Healthy() bool
+}
+
 // Client for debugging this service
-type Client struct{}
+type Client struct {
+	healthChecker HealthChecker
+}
 
 // NewClient creates a new debug client
 func NewClient() (*Client, error) {
 	return &Client{}, nil
+}
+
+// SetHealthChecker sets the health checker used by the /health endpoint.
+func (c *Client) SetHealthChecker(hc HealthChecker) {
+	c.healthChecker = hc
 }
 
 func (c *Client) String() string {
@@ -28,7 +40,7 @@ func (c *Client) String() string {
 func (c *Client) Start() error {
 	// Register the handler function for the default route
 	http.HandleFunc("/", homeHandler)
-	http.HandleFunc("/health", healthHandler)
+	http.HandleFunc("/health", c.healthHandler)
 	http.HandleFunc("/test", testEndpointHandler)
 	return nil
 }
@@ -51,8 +63,16 @@ func homeHandler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// healthHandler handles the health check route
-func healthHandler(w http.ResponseWriter, r *http.Request) {
+// healthHandler handles the health check route.
+// Returns 200 if the health checker reports healthy, 503 otherwise.
+func (c *Client) healthHandler(w http.ResponseWriter, r *http.Request) {
+	if c.healthChecker == nil || !c.healthChecker.Healthy() {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		if _, err := fmt.Fprintf(w, "Discord not connected"); err != nil {
+			logger.Error("Failed to write response", zap.Error(err), zap.String(zapkey.Path, r.URL.Path))
+		}
+		return
+	}
 	logger.Info("Health check")
 	w.WriteHeader(http.StatusOK)
 	if _, err := fmt.Fprintf(w, "OK"); err != nil {

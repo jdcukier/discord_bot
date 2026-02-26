@@ -51,29 +51,13 @@ func ToTrackIDs(urls []string) []spotify.ID {
 	return trackIDs
 }
 
-// FilterTracks returns a list of tracks that are not already in the playlist
-func FilterTracks(playlist *spotify.PlaylistItemPage, trackIDs []spotify.ID) []spotify.ID {
-	if playlist == nil || len(playlist.Items) == 0 {
-		return trackIDs
-	}
-
-	existingTracks := make(map[spotify.ID]struct{})
-	for _, playlistItem := range playlist.Items {
-		// This should never happen, but just in case
-		if playlistItem.Item.Track == nil {
-			continue
-		}
-		// Add track to existing tracks
-		existingTracks[playlistItem.Item.Track.ID] = struct{}{}
-	}
-
-	// Filter out tracks that are already in the playlist
+// FilterTracks returns a list of tracks that are not already in the provided set of existing IDs.
+func FilterTracks(existingIDs map[spotify.ID]struct{}, trackIDs []spotify.ID) []spotify.ID {
 	var filteredTracks []spotify.ID
 	for _, trackID := range trackIDs {
-		if _, ok := existingTracks[trackID]; !ok {
+		if _, ok := existingIDs[trackID]; !ok {
 			filteredTracks = append(filteredTracks, trackID)
 		}
 	}
-
 	return filteredTracks
 }

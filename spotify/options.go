@@ -1,5 +1,7 @@
 package spotify
 
+import "discordbot/spotify/config"
+
 // Option is a function that configures a Client
 type Option func(*Client) error
 
@@ -7,6 +9,13 @@ type Option func(*Client) error
 func WithMessenger(messenger MessageSender) Option {
 	return func(c *Client) error {
 		c.messenger = messenger
+		return nil
+	}
+}
+
+func WithConfig(cfg *config.Config) Option {
+	return func(c *Client) error {
+		c.config = cfg
 		return nil
 	}
 }

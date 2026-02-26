@@ -25,8 +25,12 @@ const (
 
 // Spotify-related constants
 const (
-	SpotifyAppID       = "SPOTIFY_APP_ID"
-	SpotifySecret      = "SPOTIFY_SECRET"
-	SpotifyRedirectURI = "SPOTIFY_REDIRECT_URI"
-	SpotifyPlaylistID  = "SPOTIFY_PLAYLIST_ID"
+	SpotifyPlaylistID = "SPOTIFY_PLAYLIST_ID"
+	SpotifyWorkerURL  = "SPOTIFY_WORKER_URL"
+)
+
+// Cloudflare worker access
+const (
+	CFAccessClientID     = "CF_ACCESS_CLIENT_ID"
+	CFAccessClientSecret = "CF_ACCESS_CLIENT_SECRET"
 )
