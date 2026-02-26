@@ -7,7 +7,6 @@ github.com/gorilla/websocket
 # github.com/jdcukier/spotify/v2 v2.5.0
 ## explicit; go 1.26
 github.com/jdcukier/spotify/v2
-github.com/jdcukier/spotify/v2/auth
 # github.com/joho/godotenv v1.5.1
 ## explicit; go 1.12
 github.com/joho/godotenv
