@@ -101,7 +101,6 @@ jobs:
     uses: ./.github/workflows/docker-cicd.yaml
     with:
       version: ${{ needs.git-tag.outputs.version }}
-      docker_image: ${{ vars.DOCKER_IMAGE }}
     secrets: inherit
 
   create-release:
@@ -145,6 +144,4 @@ jobs:
   release-to-prod:
     needs: create-release
     uses: ./.github/workflows/deploy-cicd.yaml
-    with:
-      docker_image: ${{ vars.DOCKER_IMAGE }}
     secrets: inherit
