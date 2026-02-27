@@ -54,16 +54,6 @@ jobs:
           echo "major=$MAJOR" >> $GITHUB_OUTPUT
           echo "minor=$MINOR" >> $GITHUB_OUTPUT
 
-      - name: Create .env file
-        run: |
-          cat > .env << EOF
-          DISCORD_APP_ID=${{ secrets.DISCORD_APP_ID }}
-          DISCORD_TOKEN=${{ secrets.DISCORD_TOKEN }}
-          SPOTIFY_APP_ID=${{ secrets.SPOTIFY_APP_ID }}
-          SPOTIFY_SECRET=${{ secrets.SPOTIFY_SECRET }}
-          SPOTIFY_REDIRECT_URI=${{ secrets.SPOTIFY_REDIRECT_URI }}
-          EOF
-
       - name: Build and push multi-platform image
         id: docker-build
         uses: docker/build-push-action@v5

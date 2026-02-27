@@ -43,12 +43,8 @@ RUN addgroup -g ${APP_UID} -S ${APP_USER} && \
 # Set working directory
 WORKDIR /app
 
-# Copy binary from builder stage and .env file
+# Copy binary from builder stage
 COPY --from=builder /app/main .
-COPY .env .
-
-# Set proper ownership
-RUN chown ${APP_USER}:${APP_USER} /app/main /app/.env
 
 # Switch to non-root user
 USER ${APP_USER}

@@ -14,6 +14,7 @@ type Config struct {
 	WorkerURL            string // Base URL of the Cloudflare Worker
 	CFAccessClientID     string // CF Access service token client ID
 	CFAccessClientSecret string // CF Access service token client secret
+	PlaylistID           string // Spotify playlist ID to add tracks to
 }
 
 // NewConfig creates a new configuration struct for the Spotify client
@@ -22,6 +23,7 @@ func NewConfig(opts ...Option) (*Config, error) {
 		WorkerURL:            os.Getenv(envvar.SpotifyWorkerURL),
 		CFAccessClientID:     os.Getenv(envvar.CFAccessClientID),
 		CFAccessClientSecret: os.Getenv(envvar.CFAccessClientSecret),
+		PlaylistID:           os.Getenv(envvar.SpotifyPlaylistID),
 	}
 	for _, opt := range opts {
 		opt(c)
@@ -45,6 +47,9 @@ func (c *Config) Validate() error {
 	}
 	if c.CFAccessClientSecret == "" {
 		missing = append(missing, "CF Access Client Secret")
+	}
+	if c.PlaylistID == "" {
+		missing = append(missing, "Spotify Playlist ID")
 	}
 	if len(missing) > 0 {
 		return fmt.Errorf("missing env vars: %s", strings.Join(missing, ", "))

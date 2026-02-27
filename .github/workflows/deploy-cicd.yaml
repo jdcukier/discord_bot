@@ -1,0 +1,118 @@
+name: Deploy to production server
+permissions:
+  contents: read
+  packages: read
+
+on:
+  workflow_call:
+
+jobs:
+    deploy:
+        name: Deploy Discord Bot in Docker Container to Production Server
+        runs-on: ubuntu-latest
+
+        steps:
+          - name: Install SSH Credentials
+            run: |
+              mkdir -p ~/.ssh
+              echo "${{ secrets.PROD_SSH_PRIVATE_KEY_VALUE }}" > ~/.ssh/${{ secrets.PROD_SSH_PRIVATE_KEY_FILENAME }}
+              chmod 600 ~/.ssh/${{ secrets.PROD_SSH_PRIVATE_KEY_FILENAME }}
+
+          - name: Install Cloudflared Tunnel for SSH
+            run: |
+              sudo curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o /usr/bin/cloudflared
+              sudo chmod a+x /usr/bin/cloudflared
+
+          # Special config file required for cloudflared tunnel ssh connection
+          - name: Prepare SSH Config file
+            run: |
+              cat <<EOF > ~/.ssh/config
+              Host ${{ secrets.PROD_SSH_HOST }}
+                HostName ${{secrets.PROD_SSH_HOST }}
+                User ${{ secrets.PROD_SSH_USERNAME }}
+                IdentityFile ~/.ssh/${{ secrets.PROD_SSH_PRIVATE_KEY_FILENAME }}
+                IdentitiesOnly yes
+                AddKeysToAgent yes
+                ProxyCommand /usr/bin/cloudflared access ssh --hostname %h --id ${{ secrets.PROD_SERVICE_TOKEN_ID }} --secret ${{ secrets.PROD_SERVICE_TOKEN_SECRET }}
+              EOF
+
+              chmod 600 ~/.ssh/config
+
+          - name: Checkout repository
+            uses: actions/checkout@v4
+
+          # Pull updated image, recreate if needed, run as daemon, and prune old images
+          - name: Build Docker Service
+            id: build
+            run: |
+              ssh -T -q -o StrictHostKeyChecking=no ${{ secrets.PROD_SSH_HOST }} '
+              cd;
+              printf "SPOTIFY_WORKER_URL=%s\n" "${{ secrets.SPOTIFY_WORKER_URL }}" > .env.tmp
+              printf "SPOTIFY_PLAYLIST_ID=%s\n" "${{ secrets.SPOTIFY_PLAYLIST_ID }}" >> .env.tmp;
+
+              printf "CF_ACCESS_CLIENT_ID=%s\n" "${{ secrets.CF_ACCESS_CLIENT_ID }}" >> .env.tmp;
+              printf "CF_ACCESS_CLIENT_SECRET=%s\n" "${{ secrets.CF_ACCESS_CLIENT_SECRET }}" >> .env.tmp;
+
+              printf "DISCORD_APP_ID=%s\n" "${{ secrets.PROD_DISCORD_APP_ID }}" >> .env.tmp;
+              printf "DISCORD_TOKEN=%s\n" "${{ secrets.PROD_DISCORD_TOKEN }}" >> .env.tmp;
+              printf "DISCORD_AUTH_CHANNEL_ID=%s\n" "${{ secrets.DISCORD_AUTH_CHANNEL_ID }}" >> .env.tmp;
+              printf "DISCORD_SONGS_CHANNEL_ID=%s\n" "${{ secrets.DISCORD_SONGS_CHANNEL_ID }}" >> .env.tmp;
+              mv .env.tmp .env;
+              chmod 600 .env;
+
+              sudo systemctl restart banger-bot.service;
+
+              docker image prune -f;'
+
+          - name: Verify Service Health
+            id: health
+            run: |
+              ACTIVE="unknown"
+              DEADLINE=$((SECONDS + 30))
+
+              while [ $SECONDS -lt $DEADLINE ]; do
+                ACTIVE=$(ssh -T -q -o StrictHostKeyChecking=no ${{ secrets.PROD_SSH_HOST }} \
+                  'systemctl is-active banger-bot')
+                echo "Service status: $ACTIVE"
+                if [ "$ACTIVE" = "active" ]; then
+                  break
+                fi
+                sleep 3
+              done
+
+              STATUS=$(ssh -T -q -o StrictHostKeyChecking=no ${{ secrets.PROD_SSH_HOST }} \
+                'systemctl status banger-bot --no-pager 2>&1 || true')
+
+              LOGS=$(ssh -T -q -o StrictHostKeyChecking=no ${{ secrets.PROD_SSH_HOST }} \
+                'journalctl -u banger-bot -n 20 --no-pager 2>&1 || true')
+
+              echo "# 🤖 Deploy Health Check" >> $GITHUB_STEP_SUMMARY
+              echo "" >> $GITHUB_STEP_SUMMARY
+              if [ "$ACTIVE" = "active" ]; then
+                echo "## ✅ Service: \`$ACTIVE\`" >> $GITHUB_STEP_SUMMARY
+              else
+                echo "## ❌ Service: \`$ACTIVE\`" >> $GITHUB_STEP_SUMMARY
+              fi
+              echo "" >> $GITHUB_STEP_SUMMARY
+              echo "### systemctl status" >> $GITHUB_STEP_SUMMARY
+              echo '```' >> $GITHUB_STEP_SUMMARY
+              echo "$STATUS" >> $GITHUB_STEP_SUMMARY
+              echo '```' >> $GITHUB_STEP_SUMMARY
+              echo "" >> $GITHUB_STEP_SUMMARY
+              echo "### Recent logs (last 20 lines)" >> $GITHUB_STEP_SUMMARY
+              echo '```' >> $GITHUB_STEP_SUMMARY
+              echo "$LOGS" >> $GITHUB_STEP_SUMMARY
+              echo '```' >> $GITHUB_STEP_SUMMARY
+
+              if [ "$ACTIVE" != "active" ]; then
+                echo "❌ banger-bot is not active after 30s (status: $ACTIVE)"
+                exit 1
+              fi
+              echo "✅ banger-bot is active"
+
+          - name: Deploy Summary
+            if: always()
+            run: |
+              echo "# 🚀 Deploy Results" >> $GITHUB_STEP_SUMMARY
+              echo "- 🏗 Build: ${{ steps.build.outcome }}" >> $GITHUB_STEP_SUMMARY
+              echo "- 🩺 Health: ${{ steps.health.outcome }}" >> $GITHUB_STEP_SUMMARY

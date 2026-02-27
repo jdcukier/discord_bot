@@ -140,3 +140,8 @@ jobs:
           echo "- 📦 GitHub Releases: https://github.com/${{ github.repository }}/releases" >> $GITHUB_STEP_SUMMARY
           echo "---" >> $GITHUB_STEP_SUMMARY
           echo "*Generated on $(date)*" >> $GITHUB_STEP_SUMMARY
+
+  release-to-prod:
+    needs: create-release
+    uses: ./.github/workflows/deploy-cicd.yaml
+    secrets: inherit

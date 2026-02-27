@@ -45,9 +45,12 @@ func (c *Config) Validate() error {
 	if c.ChannelIDs == nil {
 		c.ChannelIDs = make(map[channel.Type]string)
 	}
-	if c.ChannelIDs[channel.Auth] == "" {
-		// Authentication channel is not required, but it is recommended for ease of use
-		logger.Warn("authentication channel ID is not set")
+
+	// Required channel IDs - add to this list to require additional channels at startup
+	for _, channelType := range []channel.Type{channel.Auth, channel.Songs} {
+		if c.ChannelIDs[channelType] == "" {
+			return fmt.Errorf("%s channel ID is not set", channelType)
+		}
 	}
 	return nil
 }

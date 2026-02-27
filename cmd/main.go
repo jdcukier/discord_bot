@@ -123,8 +123,11 @@ func newDiscordClient(playlistAdder discord.PlaylistAdder) *discord.Client {
 		}
 	}
 
+	songsChannelID := config.ChannelIDs[discordchannel.Songs]
+
 	// Handlers
 	handlers := []discord.Handler{
+		discord.NewReadyHandler(songsChannelID, "REHdy for your BANGers! 🎵 \nDrop a song link and I'll REHcord it foREHver."),
 		discord.NewMessageHandler(playlistAdder, actions),
 		discord.NewInteractionSessionHandler(),
 	}
