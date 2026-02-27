@@ -77,7 +77,7 @@ jobs:
               mv .env.tmp .env;
               chmod 600 .env;
 
-              sudo systemctl restart banger-bot;
+              sudo systemctl restart banger-bot.service;
 
               docker image prune -f;'
 

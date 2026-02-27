@@ -33,10 +33,8 @@ func main() {
 		}
 	}()
 
-	// Load .env file
-	if err := godotenv.Load(); err != nil {
-		logger.Fatal("Failed to load .env file", zap.Error(err))
-	}
+	// Load .env file if present (not present when env vars are injected at runtime)
+	_ = godotenv.Load()
 
 	// Start the HTTP server
 	port := httputil.Port()
