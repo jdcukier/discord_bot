@@ -4,6 +4,9 @@ on:
   push:
     branches: [ main ]
 
+env:
+  DOCKER_IMAGE: jcukier/discord-bot
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -101,6 +104,7 @@ jobs:
     uses: ./.github/workflows/docker-cicd.yaml
     with:
       version: ${{ needs.git-tag.outputs.version }}
+      docker_image: ${{ env.DOCKER_IMAGE }}
     secrets: inherit
 
   create-release:
@@ -140,3 +144,10 @@ jobs:
           echo "- 📦 GitHub Releases: https://github.com/${{ github.repository }}/releases" >> $GITHUB_STEP_SUMMARY
           echo "---" >> $GITHUB_STEP_SUMMARY
           echo "*Generated on $(date)*" >> $GITHUB_STEP_SUMMARY
+
+  release-to-prod:
+    needs: create-release
+    uses: ./.github/workflows/deploy-cicd.yaml
+    with:
+      docker_image: ${{ env.DOCKER_IMAGE }}
+    secrets: inherit
