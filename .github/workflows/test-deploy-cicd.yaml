@@ -54,3 +54,4 @@ jobs:
     with:
       docker_image: ${{ vars.DOCKER_IMAGE }}
     secrets: inherit
+
