@@ -35,7 +35,7 @@ func main() {
 
 	// Load .env file
 	if err := godotenv.Load(); err != nil {
-		logger.Fatal("Failed to load .env file", zap.Error(err))
+		logger.Info("No .env file found or unreadable; proceeding with system environment")
 	}
 
 	// Start the HTTP server
