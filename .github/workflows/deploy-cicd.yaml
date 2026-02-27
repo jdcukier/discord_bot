@@ -22,7 +22,7 @@ jobs:
               echo "${{ secrets.PROD_SSH_PRIVATE_KEY_VALUE }}" > ~/.ssh/${{ secrets.PROD_SSH_PRIVATE_KEY_FILENAME }}
               chmod 600 ~/.ssh/${{ secrets.PROD_SSH_PRIVATE_KEY_FILENAME }}
 
-          - name: Install Cloudflared Tunnel for SSF
+          - name: Install Cloudflared Tunnel for SSH
             run: |
               sudo curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o /usr/bin/cloudflared
               sudo chmod a+x /usr/bin/cloudflared
