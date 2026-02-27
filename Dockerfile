@@ -45,7 +45,6 @@ WORKDIR /app
 
 # Copy binary from builder stage and .env file
 COPY --from=builder /app/main .
-COPY .env .
 
 # Set proper ownership
 RUN chown ${APP_USER}:${APP_USER} /app/main /app/.env
