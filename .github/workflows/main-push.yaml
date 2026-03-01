@@ -142,6 +142,8 @@ jobs:
           echo "*Generated on $(date)*" >> $GITHUB_STEP_SUMMARY
 
   release-to-prod:
-    needs: create-release
+    needs: [create-release, git-tag]
     uses: ./.github/workflows/deploy-cicd.yaml
+    with:
+      version: ${{ needs.git-tag.outputs.version }}
     secrets: inherit

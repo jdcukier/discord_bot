@@ -4,6 +4,7 @@ package envvar
 // General constants
 const (
 	VerboseLogsEnabled = "VERBOSE_LOGS_ENABLED"
+	BotVersion         = "BOT_VERSION"
 )
 
 // HTTP-related constants

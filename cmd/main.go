@@ -4,11 +4,13 @@ package main
 import (
 	"fmt"
 	"net/http"
+	"os"
 	"time"
 
 	"github.com/joho/godotenv"
 	"go.uber.org/zap"
 
+	"discordbot/constants/envvar"
 	"discordbot/constants/zapkey"
 	"discordbot/debug"
 	"discordbot/discord"
@@ -36,6 +38,11 @@ func main() {
 	// Load .env file
 	if err := godotenv.Load(); err != nil {
 		logger.Info("No .env file found or unreadable; proceeding with system environment")
+	}
+
+	botVersion := os.Getenv(envvar.BotVersion)
+	if botVersion == "" {
+		botVersion = "Development"
 	}
 
 	// Start the HTTP server
@@ -67,7 +74,7 @@ func main() {
 	}
 
 	// Initialize Discord client with the spotify client
-	discordClient := newDiscordClient(spotifyClient)
+	discordClient := newDiscordClient(spotifyClient, botVersion)
 	clients = append(clients, discordClient)
 
 	// Wire Discord health into the debug client's /health endpoint
@@ -99,7 +106,7 @@ func main() {
 
 // --- Helpers ---
 
-func newDiscordClient(playlistAdder discord.PlaylistAdder) *discord.Client {
+func newDiscordClient(playlistAdder discord.PlaylistAdder, botVersion string) *discord.Client {
 	config, err := discordconfig.NewConfig()
 	if err != nil {
 		logger.Fatal("Failed to create Discord config", zap.Error(err))
@@ -127,7 +134,8 @@ func newDiscordClient(playlistAdder discord.PlaylistAdder) *discord.Client {
 
 	// Handlers
 	handlers := []discord.Handler{
-		discord.NewReadyHandler(songsChannelID, "REHdy for your BANGers! 🎵 \nDrop a song link and I'll REHcord it foREHver."),
+		discord.NewReadyHandler(songsChannelID,
+			fmt.Sprintf("REHdy for your BANGers! 🎵\nVersion: %s\nDrop a song link and I'll REHcord it foREHver.", botVersion)),
 		discord.NewMessageHandler(playlistAdder, actions),
 		discord.NewInteractionSessionHandler(),
 	}

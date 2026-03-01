@@ -4,12 +4,10 @@ services:
   discord-bot:
     build:
       context: .
+    env_file: .env
     image: discord-bot:latest
     container_name: discord-bot
     restart: unless-stopped
-    volumes:
-      # Optional: Mount logs directory
-      - ./logs:/app/logs
     networks:
       - discord-bot-network
 
