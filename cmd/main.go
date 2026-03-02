@@ -101,7 +101,7 @@ func main() {
 
 func loadAndValidateEnv() {
 	if err := godotenv.Load(); err != nil {
-		logger.Info("No .env file found or unreadable; proceeding with system environment")
+		logger.Info("No .env file found or unreadable; proceeding with system environment", zap.Error(err))
 	}
 	required := []string{
 		envvar.DiscordToken,

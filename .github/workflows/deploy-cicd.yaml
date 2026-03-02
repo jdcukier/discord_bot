@@ -68,6 +68,7 @@ jobs:
               printf "DISCORD_AUTH_CHANNEL_ID=%s\n" "${{ secrets.DISCORD_AUTH_CHANNEL_ID }}" >> .env.tmp;
               printf "DISCORD_SONGS_CHANNEL_ID=%s\n" "${{ secrets.DISCORD_SONGS_CHANNEL_ID }}" >> .env.tmp;
               printf "BOT_READY_MESSAGE=%s\n" "${{ secrets.BOT_READY_MESSAGE }}" >> .env.tmp;
+              printf "BOT_LISTENING_MESSAGE=%s\n" "${{ secrets.BOT_LISTENING_MESSAGE }}" >> .env.tmp;
               printf "BOT_VERSION=%s\n" "${{ inputs.version }}" >> .env.tmp;
               mv .env.tmp .env;
               chmod 600 .env;
