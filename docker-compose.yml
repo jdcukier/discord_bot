@@ -2,12 +2,11 @@ version: '3.8'
 
 services:
   discord-bot:
-    build:
-      context: .
-    env_file: .env
-    image: discord-bot:latest
+    build: .
+    image: jcukier/discord-bot:latest
     container_name: discord-bot
     restart: unless-stopped
+    env_file: .env
     networks:
       - discord-bot-network
 
