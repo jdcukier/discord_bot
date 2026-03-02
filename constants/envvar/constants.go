@@ -6,6 +6,7 @@ const (
 	VerboseLogsEnabled = "VERBOSE_LOGS_ENABLED"
 	BotVersion         = "BOT_VERSION"
 	BotReadyMessage    = "BOT_READY_MESSAGE"
+	BotListeningMessage = "BOT_LISTENING_MESSAGE"
 )
 
 // HTTP-related constants

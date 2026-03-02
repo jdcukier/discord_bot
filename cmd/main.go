@@ -125,6 +125,14 @@ func loadAndValidateEnv() {
 	}
 }
 
+func listeningActivity() string {
+	msg := os.Getenv(envvar.BotListeningMessage)
+	if msg == "" {
+		msg = "song requests"
+	}
+	return msg
+}
+
 func readyMessage() string {
 	msg := os.Getenv(envvar.BotReadyMessage)
 	if msg == "" {
@@ -165,7 +173,7 @@ func newDiscordClient(playlistAdder discord.PlaylistAdder, botReadyMessage strin
 
 	// Handlers
 	handlers := []discord.Handler{
-		discord.NewReadyHandler(songsChannelID, botReadyMessage),
+		discord.NewReadyHandler(songsChannelID, botReadyMessage, listeningActivity()),
 		discord.NewMessageHandler(playlistAdder, actions),
 		discord.NewInteractionSessionHandler(),
 	}

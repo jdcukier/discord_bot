@@ -8,13 +8,14 @@ import (
 
 // ReadyHandler fires when the bot comes online (Discord gateway READY event)
 type ReadyHandler struct {
-	channelID string
-	message   string
+	channelID       string
+	message         string
+	listeningMessage string
 }
 
 // NewReadyHandler creates a new ready handler
-func NewReadyHandler(channelID, message string) *ReadyHandler {
-	return &ReadyHandler{channelID: channelID, message: message}
+func NewReadyHandler(channelID, message, listeningMessage string) *ReadyHandler {
+	return &ReadyHandler{channelID: channelID, message: message, listeningMessage: listeningMessage}
 }
 
 // String returns a string representation of the handler
@@ -33,7 +34,7 @@ func (h *ReadyHandler) Add(session *discordgo.Session) error {
 		}
 		if err := s.UpdateStatusComplex(discordgo.UpdateStatusData{
 			Activities: []*discordgo.Activity{{
-				Name: "BANGers",
+				Name: h.listeningMessage,
 				Type: discordgo.ActivityTypeListening,
 			}},
 		}); err != nil {
