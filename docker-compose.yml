@@ -2,14 +2,11 @@ version: '3.8'
 
 services:
   discord-bot:
-    build:
-      context: .
-    image: discord-bot:latest
+    build: .
+    image: jcukier/discord-bot:latest
     container_name: discord-bot
     restart: unless-stopped
-    volumes:
-      # Optional: Mount logs directory
-      - ./logs:/app/logs
+    env_file: .env
     networks:
       - discord-bot-network
 

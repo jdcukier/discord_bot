@@ -5,6 +5,11 @@ permissions:
 
 on:
   workflow_call:
+    inputs:
+      version:
+        required: true
+        type: string
+        default: "Unable to pull version"
 
 jobs:
     deploy:
@@ -41,12 +46,17 @@ jobs:
           - name: Checkout repository
             uses: actions/checkout@v4
 
+          - name: Copy docker-compose.yml to server
+            run: |
+              scp -o StrictHostKeyChecking=no docker-compose.yml \
+                ${{ secrets.PROD_SSH_HOST }}:~/docker-compose.yml
+
           # Pull updated image, recreate if needed, run as daemon, and prune old images
           - name: Build Docker Service
             id: build
             run: |
               ssh -T -q -o StrictHostKeyChecking=no ${{ secrets.PROD_SSH_HOST }} '
-              cd;
+              cd ~;
               printf "SPOTIFY_WORKER_URL=%s\n" "${{ secrets.SPOTIFY_WORKER_URL }}" > .env.tmp
               printf "SPOTIFY_PLAYLIST_ID=%s\n" "${{ secrets.SPOTIFY_PLAYLIST_ID }}" >> .env.tmp;
 
@@ -57,46 +67,50 @@ jobs:
               printf "DISCORD_TOKEN=%s\n" "${{ secrets.PROD_DISCORD_TOKEN }}" >> .env.tmp;
               printf "DISCORD_AUTH_CHANNEL_ID=%s\n" "${{ secrets.DISCORD_AUTH_CHANNEL_ID }}" >> .env.tmp;
               printf "DISCORD_SONGS_CHANNEL_ID=%s\n" "${{ secrets.DISCORD_SONGS_CHANNEL_ID }}" >> .env.tmp;
+              printf "BOT_READY_MESSAGE=%s\n" "${{ secrets.BOT_READY_MESSAGE }}" >> .env.tmp;
+              printf "BOT_LISTENING_MESSAGE=%s\n" "${{ secrets.BOT_LISTENING_MESSAGE }}" >> .env.tmp;
+              printf "BOT_VERSION=%s\n" "${{ inputs.version }}" >> .env.tmp;
               mv .env.tmp .env;
               chmod 600 .env;
 
-              sudo systemctl restart banger-bot.service;
+              docker compose pull;
+              docker compose up -d --remove-orphans;
 
               docker image prune -f;'
 
           - name: Verify Service Health
             id: health
             run: |
-              ACTIVE="unknown"
+              STATUS="unknown"
               DEADLINE=$((SECONDS + 30))
 
               while [ $SECONDS -lt $DEADLINE ]; do
-                ACTIVE=$(ssh -T -q -o StrictHostKeyChecking=no ${{ secrets.PROD_SSH_HOST }} \
-                  'systemctl is-active banger-bot')
-                echo "Service status: $ACTIVE"
-                if [ "$ACTIVE" = "active" ]; then
+                STATUS=$(ssh -T -q -o StrictHostKeyChecking=no ${{ secrets.PROD_SSH_HOST }} \
+                  'docker inspect -f "{{.State.Status}}" discord-bot 2>/dev/null || echo "not found"')
+                echo "Container status: $STATUS"
+                if [ "$STATUS" = "running" ]; then
                   break
                 fi
                 sleep 3
               done
 
-              STATUS=$(ssh -T -q -o StrictHostKeyChecking=no ${{ secrets.PROD_SSH_HOST }} \
-                'systemctl status banger-bot --no-pager 2>&1 || true')
+              INSPECT=$(ssh -T -q -o StrictHostKeyChecking=no ${{ secrets.PROD_SSH_HOST }} \
+                'docker inspect discord-bot --format="{{json .State}}" 2>&1 || true')
 
               LOGS=$(ssh -T -q -o StrictHostKeyChecking=no ${{ secrets.PROD_SSH_HOST }} \
-                'journalctl -u banger-bot -n 20 --no-pager 2>&1 || true')
+                'docker logs discord-bot --tail 20 2>&1 || true')
 
               echo "# 🤖 Deploy Health Check" >> $GITHUB_STEP_SUMMARY
               echo "" >> $GITHUB_STEP_SUMMARY
-              if [ "$ACTIVE" = "active" ]; then
-                echo "## ✅ Service: \`$ACTIVE\`" >> $GITHUB_STEP_SUMMARY
+              if [ "$STATUS" = "running" ]; then
+                echo "## ✅ Container: \`$STATUS\`" >> $GITHUB_STEP_SUMMARY
               else
-                echo "## ❌ Service: \`$ACTIVE\`" >> $GITHUB_STEP_SUMMARY
+                echo "## ❌ Container: \`$STATUS\`" >> $GITHUB_STEP_SUMMARY
               fi
               echo "" >> $GITHUB_STEP_SUMMARY
-              echo "### systemctl status" >> $GITHUB_STEP_SUMMARY
+              echo "### docker inspect state" >> $GITHUB_STEP_SUMMARY
               echo '```' >> $GITHUB_STEP_SUMMARY
-              echo "$STATUS" >> $GITHUB_STEP_SUMMARY
+              echo "$INSPECT" >> $GITHUB_STEP_SUMMARY
               echo '```' >> $GITHUB_STEP_SUMMARY
               echo "" >> $GITHUB_STEP_SUMMARY
               echo "### Recent logs (last 20 lines)" >> $GITHUB_STEP_SUMMARY
@@ -104,11 +118,11 @@ jobs:
               echo "$LOGS" >> $GITHUB_STEP_SUMMARY
               echo '```' >> $GITHUB_STEP_SUMMARY
 
-              if [ "$ACTIVE" != "active" ]; then
-                echo "❌ banger-bot is not active after 30s (status: $ACTIVE)"
+              if [ "$STATUS" != "running" ]; then
+                echo "❌ discord-bot container is not running after 30s (status: $STATUS)"
                 exit 1
               fi
-              echo "✅ banger-bot is active"
+              echo "✅ discord-bot container is running"
 
           - name: Deploy Summary
             if: always()

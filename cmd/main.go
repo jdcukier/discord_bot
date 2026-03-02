@@ -4,11 +4,13 @@ package main
 import (
 	"fmt"
 	"net/http"
+	"os"
 	"time"
 
 	"github.com/joho/godotenv"
 	"go.uber.org/zap"
 
+	"discordbot/constants/envvar"
 	"discordbot/constants/zapkey"
 	"discordbot/debug"
 	"discordbot/discord"
@@ -33,10 +35,8 @@ func main() {
 		}
 	}()
 
-	// Load .env file
-	if err := godotenv.Load(); err != nil {
-		logger.Fatal("Failed to load .env file", zap.Error(err))
-	}
+	// Load and validate environment variables
+	loadAndValidateEnv()
 
 	// Start the HTTP server
 	port := httputil.Port()
@@ -67,7 +67,7 @@ func main() {
 	}
 
 	// Initialize Discord client with the spotify client
-	discordClient := newDiscordClient(spotifyClient)
+	discordClient := newDiscordClient(spotifyClient, readyMessage())
 	clients = append(clients, discordClient)
 
 	// Wire Discord health into the debug client's /health endpoint
@@ -99,7 +99,53 @@ func main() {
 
 // --- Helpers ---
 
-func newDiscordClient(playlistAdder discord.PlaylistAdder) *discord.Client {
+func loadAndValidateEnv() {
+	if err := godotenv.Load(); err != nil {
+		logger.Info("No .env file found or unreadable; proceeding with system environment", zap.Error(err))
+	}
+	required := []string{
+		envvar.DiscordToken,
+		envvar.DiscordAppID,
+		envvar.DiscordAuthChannelID,
+		envvar.DiscordSongsChannelID,
+		envvar.SpotifyPlaylistID,
+		envvar.SpotifyWorkerURL,
+		envvar.CFAccessClientID,
+		envvar.CFAccessClientSecret,
+	}
+	var missing []string
+	for _, v := range required {
+		if os.Getenv(v) == "" {
+			missing = append(missing, v)
+		}
+	}
+	if len(missing) > 0 {
+		logger.Fatal("missing required environment variables",
+			zap.Strings("vars", missing))
+	}
+}
+
+func listeningActivity() string {
+	msg := os.Getenv(envvar.BotListeningMessage)
+	if msg == "" {
+		msg = "song requests"
+	}
+	return msg
+}
+
+func readyMessage() string {
+	msg := os.Getenv(envvar.BotReadyMessage)
+	if msg == "" {
+		msg = "Bot is online. Ready to record your songs."
+	}
+	version := os.Getenv(envvar.BotVersion)
+	if version == "" {
+		version = "Unknown version"
+	}
+	return fmt.Sprintf("%s\nVersion: %s", msg, version)
+}
+
+func newDiscordClient(playlistAdder discord.PlaylistAdder, botReadyMessage string) *discord.Client {
 	config, err := discordconfig.NewConfig()
 	if err != nil {
 		logger.Fatal("Failed to create Discord config", zap.Error(err))
@@ -127,7 +173,7 @@ func newDiscordClient(playlistAdder discord.PlaylistAdder) *discord.Client {
 
 	// Handlers
 	handlers := []discord.Handler{
-		discord.NewReadyHandler(songsChannelID, "REHdy for your BANGers! 🎵 \nDrop a song link and I'll REHcord it foREHver."),
+		discord.NewReadyHandler(songsChannelID, botReadyMessage, listeningActivity()),
 		discord.NewMessageHandler(playlistAdder, actions),
 		discord.NewInteractionSessionHandler(),
 	}
