@@ -6,7 +6,7 @@
 	"$schema": "node_modules/wrangler/config-schema.json",
 	"name": "banger-spotify-worker",
 	"main": "src/main.py",
-	"compatibility_date": "2025-11-02",
+	"compatibility_date": "2026-03-10",
 	"compatibility_flags": [
 		"python_workers",
 		"python_dedicated_snapshot"
