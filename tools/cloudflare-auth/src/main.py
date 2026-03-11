@@ -255,7 +255,7 @@ async def force_refresh(user_id: str, request: Request):
 
 class Default(WorkerEntrypoint):
     async def fetch(self, request):
-        import asgi
+        import _asgi as asgi
 
         app.state.env = self.env
         return await asgi.fetch(app, request.js_object, self.env)
