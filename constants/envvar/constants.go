@@ -48,6 +48,9 @@ const (
 	SpotifyPlaylistTriggers     = "SPOTIFY_PLAYLIST_TRIGGERS"
 	SpotifyTriggerPrefix        = "SPOTIFY_TRIGGER_PREFIX"
 	SpotifyReplyUnknownTriggers = "SPOTIFY_REPLY_UNKNOWN_TRIGGERS"
+
+	// Genre-based playlist registry, used for messages without a known trigger
+	SpotifyPlaylistConfig = "SPOTIFY_PLAYLIST_CONFIG"
 )
 
 // Cloudflare worker access

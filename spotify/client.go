@@ -7,21 +7,28 @@ import (
 	"net/http"
 	"sync"
 
+	"github.com/bwmarrin/discordgo"
 	"github.com/jdcukier/spotify/v2"
 	"go.uber.org/zap"
 
 	"discordbot/constants/zapkey"
 	"discordbot/discord/channel"
 	"discordbot/spotify/config"
+	"discordbot/spotify/registry"
 	"discordbot/spotify/worker"
 )
 
-// MessageSender is an interface for posting messages
-// This will primarily be used for posting the Spotify Auth link to the user instead of
-// needing to check the logs to find it.
-// Note: This may be expanded to support other message posting in the future.
-type MessageSender interface {
+// ComponentSender sends Discord messages, including messages with interactive button components.
+type ComponentSender interface {
 	SendMessage(ctx context.Context, channelType string, message string) error
+	SendMessageWithButtons(ctx context.Context, channelType string, message string, buttons []discordgo.Button) (string, error)
+}
+
+// pendingInteraction stores a track-add operation waiting on user input.
+type pendingInteraction struct {
+	userID     string
+	trackURLs  []string
+	candidates []registry.PlaylistEntry
 }
 
 // pendingEntry holds queued post-auth callbacks for one user.
@@ -32,7 +39,7 @@ type pendingEntry struct {
 // Client represents a spotify client
 type Client struct {
 	// Clients
-	messenger MessageSender
+	messenger ComponentSender
 
 	// Configuration
 	config *config.Config
@@ -40,9 +47,16 @@ type Client struct {
 	// Cloudflare Worker client
 	workerClient *worker.Client
 
+	// Playlist registry (optional; nil falls back to single-playlist mode)
+	registry *registry.Registry
+
 	// Per-user auth tracking. authMu protects authenticatingUsers and each entry's callbacks.
 	authMu              sync.Mutex
 	authenticatingUsers map[string]*pendingEntry
+
+	// Pending interaction tracking. pendingMu protects pendingInteractions.
+	pendingMu           sync.Mutex
+	pendingInteractions map[string]*pendingInteraction
 }
 
 // NewClient initializes Spotify client using Authorization Code Flow.
@@ -74,6 +88,7 @@ func NewClient(opts ...Option) (*Client, error) {
 		c.config.CFAccessClientSecret,
 	)
 	c.authenticatingUsers = make(map[string]*pendingEntry)
+	c.pendingInteractions = make(map[string]*pendingInteraction)
 
 	return c, nil
 }
@@ -94,8 +109,8 @@ func (c *Client) Stop() error {
 	return nil
 }
 
-// SetMessenger sets the message sender for the client
-func (c *Client) SetMessenger(messenger MessageSender) {
+// SetMessenger sets the component sender for the client
+func (c *Client) SetMessenger(messenger ComponentSender) {
 	c.messenger = messenger
 }
 
@@ -195,5 +210,14 @@ func (c *Client) reportToDiscord(ctx context.Context, message string) {
 	}
 	if err := c.messenger.SendMessage(ctx, channel.Auth.String(), message); err != nil {
 		logger.Warn("Failed to post Spotify status to Discord", zap.Error(err))
+	}
+}
+
+func (c *Client) reportToSongsChannel(ctx context.Context, message string) {
+	if c.messenger == nil {
+		return
+	}
+	if err := c.messenger.SendMessage(ctx, channel.Songs.String(), message); err != nil {
+		logger.Warn("Failed to post to songs channel", zap.Error(err))
 	}
 }

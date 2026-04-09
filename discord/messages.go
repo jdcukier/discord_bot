@@ -32,6 +32,11 @@ type PlaylistAdder interface {
 	AddTracksToPlaylist(ctx context.Context, userID string, trackURLs []string, playlistIDs ...string) error
 }
 
+// TrackRouter routes Spotify track URLs to the appropriate playlist(s), e.g. by genre.
+type TrackRouter interface {
+	RouteTracksToPlaylist(ctx context.Context, userID string, trackURLs []string) error
+}
+
 // --- Message Sender ---
 
 // SendMessage sends a message to a channel
@@ -51,6 +56,32 @@ func (c *Client) SendMessage(ctx context.Context, channelType string, message st
 	return nil
 }
 
+// SendMessageWithButtons sends a message with interactive button components to a channel
+// and returns the sent message's ID.
+func (c *Client) SendMessageWithButtons(ctx context.Context, channelType string, message string, buttons []discordgo.Button) (string, error) {
+	if err := c.Validate(); err != nil {
+		return "", fmt.Errorf("failed to validate discord client: %w", err)
+	}
+	channelID, ok := c.config.ChannelIDs[channel.NewType(channelType)]
+	if !ok {
+		return "", fmt.Errorf("no channel configured for type: %s", channelType)
+	}
+
+	components := make([]discordgo.MessageComponent, len(buttons))
+	for i, b := range buttons {
+		components[i] = b
+	}
+
+	msg, err := c.session.ChannelMessageSendComplex(channelID, &discordgo.MessageSend{
+		Content:    message,
+		Components: []discordgo.MessageComponent{discordgo.ActionsRow{Components: components}},
+	})
+	if err != nil {
+		return "", fmt.Errorf("failed to send message with buttons: %w", err)
+	}
+	return msg.ID, nil
+}
+
 // --- Message Event Handlers ---
 
 // MessageHandler handles message events
@@ -58,6 +89,7 @@ type MessageHandler struct {
 	playlistAdder PlaylistAdder
 	actionIDs     ChannelActions  // Map of channel IDs to actions to take for that channel
 	triggers      *trigger.Config // Optional playlist triggers; nil adds to the default playlist only
+	trackRouter   TrackRouter     // Optional router for messages without a known trigger; nil adds to the default playlist
 }
 
 // MessageHandlerOption overrides a default message handler value
@@ -67,6 +99,14 @@ type MessageHandlerOption func(*MessageHandler)
 func WithPlaylistTriggers(triggers *trigger.Config) MessageHandlerOption {
 	return func(h *MessageHandler) {
 		h.triggers = triggers
+	}
+}
+
+// WithTrackRouter routes tracks in messages without a known playlist trigger through
+// the given router (e.g. genre-based) instead of adding them to the default playlist
+func WithTrackRouter(router TrackRouter) MessageHandlerOption {
+	return func(h *MessageHandler) {
+		h.trackRouter = router
 	}
 }
 
@@ -136,7 +176,7 @@ func (h *MessageHandler) Handle(s *discordgo.Session, m *discordgo.MessageCreate
 
 	actionIDs, ok := h.actionIDs[m.ChannelID]
 	if !ok {
-		// Nothing to do, log a debug message anr return
+		// Nothing to do, log a debug message and return
 		logger.Debug("Received message for unknown channel", fields...)
 		return
 	}
@@ -151,7 +191,7 @@ func (h *MessageHandler) Handle(s *discordgo.Session, m *discordgo.MessageCreate
 			reply := &Reply{session: s, event: m}
 			actions = append(actions, reply)
 		case ActionAddTracksToPlaylist:
-			addTracksToPlaylist := &AddTracksToPlaylist{session: s, event: m, playlistAdder: h.playlistAdder, triggers: h.triggers}
+			addTracksToPlaylist := &AddTracksToPlaylist{session: s, event: m, playlistAdder: h.playlistAdder, triggers: h.triggers, trackRouter: h.trackRouter}
 			actions = append(actions, addTracksToPlaylist)
 		default:
 			logger.With(zap.String(zapkey.Action, actionID)).Error("received unknown action", fields...)
@@ -217,12 +257,13 @@ func validateMessage(m *discordgo.MessageCreate) error {
 	return nil
 }
 
-// AddTracksToPlaylist handles adding tracks to a playlist
+// AddTracksToPlaylist handles routing tracks to the appropriate playlist
 type AddTracksToPlaylist struct {
 	session       *discordgo.Session
 	event         *discordgo.MessageCreate
 	playlistAdder PlaylistAdder
 	triggers      *trigger.Config
+	trackRouter   TrackRouter
 }
 
 // String returns a string representation of the action
@@ -230,12 +271,12 @@ func (a *AddTracksToPlaylist) String() string {
 	return ActionAddTracksToPlaylist
 }
 
-// Execute adds tracks to a playlist
+// Execute routes tracks to the appropriate playlist
 func (a *AddTracksToPlaylist) Execute(ctx context.Context) {
 	fields := ctxutil.ZapFields(ctx)
 
 	if err := a.Validate(); err != nil {
-		logger.With(zap.Error(err)).Error("Failed to add tracks to playlist", fields...)
+		logger.With(zap.Error(err)).Error("Failed to route tracks to playlist", fields...)
 		return
 	}
 
@@ -252,8 +293,15 @@ func (a *AddTracksToPlaylist) Execute(ctx context.Context) {
 		zap.Strings(zapkey.TrackURLs, trackURLs),
 	)
 
-	// Log if we found any tracks
 	logger.With(zap.Int(zapkey.Count, len(trackURLs))).Info("Found Spotify tracks", fields...)
+
+	// Known triggers pick the playlists; otherwise the track router decides, when configured
+	if !a.hasKnownTrigger(ctx) && a.trackRouter != nil {
+		if err := a.trackRouter.RouteTracksToPlaylist(ctx, a.event.Author.ID, trackURLs); err != nil {
+			logger.With(zap.Error(err)).Error("Failed to route tracks to playlist", fields...)
+		}
+		return
+	}
 
 	playlistIDs := a.playlistIDs(ctx)
 	if len(playlistIDs) == 0 {
@@ -271,8 +319,20 @@ func (a *AddTracksToPlaylist) Execute(ctx context.Context) {
 	}
 }
 
+// hasKnownTrigger reports whether the message uses at least one configured playlist trigger
+// (including the reserved default trigger). Unknown triggers are logged (and optionally replied to).
+func (a *AddTracksToPlaylist) hasKnownTrigger(ctx context.Context) bool {
+	if a.triggers == nil {
+		return false
+	}
+	names := a.triggers.Extract(a.event.Content)
+	_, unknown := a.triggers.Resolve(a.event.Content)
+	a.reportUnknownTriggers(ctx, unknown)
+	return len(names) > len(unknown)
+}
+
 // playlistIDs returns the playlists to add the message's tracks to.
-// Unknown triggers are logged (and optionally replied to) and otherwise ignored.
+// Unknown triggers are ignored here; hasKnownTrigger reports them.
 func (a *AddTracksToPlaylist) playlistIDs(ctx context.Context) []string {
 	fields := ctxutil.ZapFields(ctx)
 
@@ -286,14 +346,19 @@ func (a *AddTracksToPlaylist) playlistIDs(ctx context.Context) []string {
 		return []string{playlistID}
 	}
 
-	playlistIDs, unknown := a.triggers.Resolve(a.event.Content)
-	if len(unknown) > 0 {
-		logger.With(zap.Strings(zapkey.Triggers, unknown)).Warn("Unknown playlist triggers", fields...)
-		if a.triggers.ReplyUnknown {
-			a.replyUnknownTriggers(ctx, unknown)
-		}
-	}
+	playlistIDs, _ := a.triggers.Resolve(a.event.Content)
 	return playlistIDs
+}
+
+// reportUnknownTriggers logs (and optionally replies to) any unknown trigger names
+func (a *AddTracksToPlaylist) reportUnknownTriggers(ctx context.Context, unknown []string) {
+	if len(unknown) == 0 {
+		return
+	}
+	logger.With(zap.Strings(zapkey.Triggers, unknown)).Warn("Unknown playlist triggers", ctxutil.ZapFields(ctx)...)
+	if a.triggers.ReplyUnknown {
+		a.replyUnknownTriggers(ctx, unknown)
+	}
 }
 
 // replyUnknownTriggers replies to the message listing the unknown triggers

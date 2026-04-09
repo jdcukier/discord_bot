@@ -19,6 +19,7 @@ import (
 	discordchannel "discordbot/discord/channel"
 	discordconfig "discordbot/discord/config"
 	"discordbot/spotify"
+	"discordbot/spotify/registry"
 	"discordbot/spotify/trigger"
 	"discordbot/utils/httputil"
 )
@@ -75,14 +76,30 @@ func run() error {
 	}
 	clients = append(clients, debugClient)
 
+	// Load optional playlist registry
+	reg, err := loadRegistry()
+	if err != nil {
+		return err
+	}
+
 	// Initialize Spotify client
-	spotifyClient, err := spotify.NewClient()
+	spotifyOpts := []spotify.Option{}
+	if reg != nil {
+		spotifyOpts = append(spotifyOpts, spotify.WithRegistry(reg))
+	}
+	spotifyClient, err := spotify.NewClient(spotifyOpts...)
 	if err != nil {
 		return fmt.Errorf("failed to create Spotify client: %w", err)
 	}
 
+	// Route tracks without a known trigger by genre, when a registry is configured
+	var trackRouter discord.TrackRouter
+	if reg != nil {
+		trackRouter = spotifyClient
+	}
+
 	// Initialize the Spotify Discord bot with the spotify client
-	spotifyBot, err := newSpotifyBot(spotifyClient)
+	spotifyBot, err := newSpotifyBot(spotifyClient, spotifyClient, trackRouter)
 	if err != nil {
 		return fmt.Errorf("failed to create Spotify Discord bot: %w", err)
 	}
@@ -143,6 +160,20 @@ func loadAndValidateEnv() error {
 	return nil
 }
 
+// loadRegistry attempts to build a playlist registry from SPOTIFY_PLAYLIST_CONFIG.
+// Returns nil if the env var is unset (tracks without a trigger go to the default playlist).
+func loadRegistry() (*registry.Registry, error) {
+	configJSON := os.Getenv(envvar.SpotifyPlaylistConfig)
+	if configJSON == "" {
+		return nil, nil
+	}
+	reg, err := registry.Load(configJSON)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse %s: %w", envvar.SpotifyPlaylistConfig, err)
+	}
+	return reg, nil
+}
+
 // withVersion appends the bot version to a ready message
 func withVersion(msg string) string {
 	version := os.Getenv(envvar.BotVersion)
@@ -152,8 +183,9 @@ func withVersion(msg string) string {
 	return fmt.Sprintf("%s\nVersion: %s", msg, version)
 }
 
-// newSpotifyBot creates the Discord bot that collects songs into the Spotify playlist
-func newSpotifyBot(playlistAdder discord.PlaylistAdder) (*discord.Client, error) {
+// newSpotifyBot creates the Discord bot that collects songs into the Spotify playlist.
+// trackRouter is optional: when nil, tracks without a known trigger go to the default playlist.
+func newSpotifyBot(playlistAdder discord.PlaylistAdder, interactionRouter discord.InteractionRouter, trackRouter discord.TrackRouter) (*discord.Client, error) {
 	config, err := discordconfig.Load(envvar.NamespaceSpotify)
 	if err != nil {
 		return nil, err
@@ -167,10 +199,10 @@ func newSpotifyBot(playlistAdder discord.PlaylistAdder) (*discord.Client, error)
 	for channelType, channelID := range config.ChannelIDs {
 		switch channelType {
 		case discordchannel.Songs:
-			// Add tracks to playlist for the Songs channel
+			// Route tracks to playlist for the Songs channel
 			actions.Add(channelID, discord.ActionAddTracksToPlaylist)
 		case discordchannel.Debug:
-			// Add tracks to playlist and send a reply for the Debug channel
+			// Route tracks to playlist and send a reply for the Debug channel
 			actions.Add(channelID, discord.ActionReply)
 			actions.Add(channelID, discord.ActionAddTracksToPlaylist)
 		default:
@@ -204,11 +236,17 @@ func newSpotifyBot(playlistAdder discord.PlaylistAdder) (*discord.Client, error)
 		logger.Info("Loaded playlist triggers", zap.Strings(zapkey.Triggers, triggerNames))
 	}
 
+	// Known triggers pick playlists; the track router (if any) handles everything else
+	messageOpts := []discord.MessageHandlerOption{discord.WithPlaylistTriggers(triggers)}
+	if trackRouter != nil {
+		messageOpts = append(messageOpts, discord.WithTrackRouter(trackRouter))
+	}
+
 	// Handlers
 	handlers := []discord.Handler{
 		discord.NewReadyHandler(songsChannelID, withVersion(readyMessage), listeningMessage),
-		discord.NewMessageHandler(playlistAdder, actions, discord.WithPlaylistTriggers(triggers)),
-		discord.NewInteractionSessionHandler(),
+		discord.NewMessageHandler(playlistAdder, actions, messageOpts...),
+		discord.NewInteractionSessionHandler(interactionRouter),
 	}
 
 	// Create the client

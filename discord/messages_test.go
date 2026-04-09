@@ -77,3 +77,48 @@ func TestAddTracksToPlaylistWithoutTriggers(t *testing.T) {
 	adder := executeAddTracks(t, nil, testLink+" !relaxing")
 	assert.Equal(t, [][]string{{"env-default-id"}}, adder.calls)
 }
+
+// fakeTrackRouter records each call to RouteTracksToPlaylist
+type fakeTrackRouter struct {
+	trackURLs [][]string
+}
+
+func (f *fakeTrackRouter) RouteTracksToPlaylist(_ context.Context, _ string, trackURLs []string) error {
+	f.trackURLs = append(f.trackURLs, trackURLs)
+	return nil
+}
+
+func TestAddTracksToPlaylistTriggersBeforeTrackRouter(t *testing.T) {
+	triggers, err := trigger.New("!", "default-id", map[string][]string{"gym": {"gym-id"}}, false)
+	require.NoError(t, err)
+
+	tests := map[string]struct {
+		triggers   *trigger.Config
+		content    string
+		wantAdds   [][]string
+		wantRoutes int
+	}{
+		"known trigger adds directly":      {triggers, testLink + " !gym", [][]string{{"gym-id"}}, 0},
+		"default trigger adds directly":    {triggers, testLink + " !default", [][]string{{"default-id"}}, 0},
+		"no trigger is routed":             {triggers, testLink, nil, 1},
+		"unknown trigger is routed":        {triggers, testLink + " !unknown", nil, 1},
+		"no triggers configured is routed": {nil, testLink + " !gym", nil, 1},
+	}
+	for name, tc := range tests {
+		adder := &fakePlaylistAdder{}
+		router := &fakeTrackRouter{}
+		action := &AddTracksToPlaylist{
+			session: &discordgo.Session{},
+			event: &discordgo.MessageCreate{Message: &discordgo.Message{
+				Content: tc.content,
+				Author:  &discordgo.User{ID: "user-id"},
+			}},
+			playlistAdder: adder,
+			triggers:      tc.triggers,
+			trackRouter:   router,
+		}
+		action.Execute(context.Background())
+		assert.Equal(t, tc.wantAdds, adder.calls, name)
+		assert.Len(t, router.trackURLs, tc.wantRoutes, name)
+	}
+}
