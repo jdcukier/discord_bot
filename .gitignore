@@ -125,3 +125,9 @@ logs/
 *.wsp
 *.wsd
 *.wsproj
+
+# ========================
+# Claude Code
+# ========================
+
+*research.md

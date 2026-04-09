@@ -3,12 +3,10 @@ package discord
 import (
 	"context"
 	"fmt"
-	"os"
 
 	"github.com/bwmarrin/discordgo"
 	"go.uber.org/zap"
 
-	"discordbot/constants/envvar"
 	"discordbot/constants/zapkey"
 	"discordbot/discord/channel"
 	"discordbot/log"
@@ -25,9 +23,9 @@ const (
 
 // --- Interfaces ---
 
-// PlaylistAdder is an interface for adding tracks to a playlist
-type PlaylistAdder interface {
-	AddTracksToPlaylist(ctx context.Context, userID string, playlistID string, trackURLs []string) error
+// TrackRouter routes Spotify track URLs to the appropriate playlist(s).
+type TrackRouter interface {
+	RouteTracksToPlaylist(ctx context.Context, userID string, trackURLs []string) error
 }
 
 // --- Message Sender ---
@@ -49,17 +47,43 @@ func (c *Client) SendMessage(ctx context.Context, channelType string, message st
 	return nil
 }
 
+// SendMessageWithButtons sends a message with interactive button components to a channel
+// and returns the sent message's ID.
+func (c *Client) SendMessageWithButtons(ctx context.Context, channelType string, message string, buttons []discordgo.Button) (string, error) {
+	if err := c.Validate(); err != nil {
+		return "", fmt.Errorf("failed to validate discord client: %w", err)
+	}
+	channelID, ok := c.config.ChannelIDs[channel.NewType(channelType)]
+	if !ok {
+		return "", fmt.Errorf("no channel configured for type: %s", channelType)
+	}
+
+	components := make([]discordgo.MessageComponent, len(buttons))
+	for i, b := range buttons {
+		components[i] = b
+	}
+
+	msg, err := c.session.ChannelMessageSendComplex(channelID, &discordgo.MessageSend{
+		Content:    message,
+		Components: []discordgo.MessageComponent{discordgo.ActionsRow{Components: components}},
+	})
+	if err != nil {
+		return "", fmt.Errorf("failed to send message with buttons: %w", err)
+	}
+	return msg.ID, nil
+}
+
 // --- Message Event Handlers ---
 
 // MessageHandler handles message events
 type MessageHandler struct {
-	playlistAdder PlaylistAdder
-	actionIDs     ChannelActions // Map of channel IDs to actions to take for that channel
+	trackRouter TrackRouter
+	actionIDs   ChannelActions // Map of channel IDs to actions to take for that channel
 }
 
 // NewMessageHandler creates a new message handler
-func NewMessageHandler(playlistAdder PlaylistAdder, actions ChannelActions) *MessageHandler {
-	return &MessageHandler{playlistAdder: playlistAdder, actionIDs: actions}
+func NewMessageHandler(trackRouter TrackRouter, actions ChannelActions) *MessageHandler {
+	return &MessageHandler{trackRouter: trackRouter, actionIDs: actions}
 }
 
 // String returns a string representation of the handler
@@ -119,7 +143,7 @@ func (h *MessageHandler) Handle(s *discordgo.Session, m *discordgo.MessageCreate
 
 	actionIDs, ok := h.actionIDs[m.ChannelID]
 	if !ok {
-		// Nothing to do, log a debug message anr return
+		// Nothing to do, log a debug message and return
 		logger.Debug("Received message for unknown channel", fields...)
 		return
 	}
@@ -134,7 +158,7 @@ func (h *MessageHandler) Handle(s *discordgo.Session, m *discordgo.MessageCreate
 			reply := &Reply{session: s, event: m}
 			actions = append(actions, reply)
 		case ActionAddTracksToPlaylist:
-			addTracksToPlaylist := &AddTracksToPlaylist{session: s, event: m, playlistAdder: h.playlistAdder}
+			addTracksToPlaylist := &AddTracksToPlaylist{session: s, event: m, trackRouter: h.trackRouter}
 			actions = append(actions, addTracksToPlaylist)
 		default:
 			logger.With(zap.String(zapkey.Action, actionID)).Error("received unknown action", fields...)
@@ -200,11 +224,11 @@ func validateMessage(m *discordgo.MessageCreate) error {
 	return nil
 }
 
-// AddTracksToPlaylist handles adding tracks to a playlist
+// AddTracksToPlaylist handles routing tracks to the appropriate playlist
 type AddTracksToPlaylist struct {
-	session       *discordgo.Session
-	event         *discordgo.MessageCreate
-	playlistAdder PlaylistAdder
+	session     *discordgo.Session
+	event       *discordgo.MessageCreate
+	trackRouter TrackRouter
 }
 
 // String returns a string representation of the action
@@ -212,12 +236,12 @@ func (a *AddTracksToPlaylist) String() string {
 	return ActionAddTracksToPlaylist
 }
 
-// Execute adds tracks to a playlist
+// Execute routes tracks to the appropriate playlist
 func (a *AddTracksToPlaylist) Execute(ctx context.Context) {
 	fields := ctxutil.ZapFields(ctx)
 
 	if err := a.Validate(); err != nil {
-		logger.With(zap.Error(err)).Error("Failed to add tracks to playlist", fields...)
+		logger.With(zap.Error(err)).Error("Failed to route tracks to playlist", fields...)
 		return
 	}
 
@@ -234,31 +258,18 @@ func (a *AddTracksToPlaylist) Execute(ctx context.Context) {
 		zap.Strings(zapkey.TrackURLs, trackURLs),
 	)
 
-	// Log if we found any tracks
 	logger.With(zap.Int(zapkey.Count, len(trackURLs))).Info("Found Spotify tracks", fields...)
 
-	// TODO: Make this more configurable to support multiple playlists
-	playlistID := os.Getenv(envvar.SpotifyPlaylistID)
-	if playlistID == "" {
-		logger.With(zap.Error(fmt.Errorf("failed to retrieve playlist ID from env var"))).Error("Playlist ID is empty", fields...)
-		return
-	}
-
-	ctx, fields = ctxutil.WithZapFields(
-		ctx,
-		zap.String(zapkey.PlaylistID, playlistID),
-	)
-
-	if err := a.playlistAdder.AddTracksToPlaylist(ctx, a.event.Author.ID, playlistID, trackURLs); err != nil {
-		logger.With(zap.Error(err)).Error("Failed to add tracks to playlist", fields...)
+	if err := a.trackRouter.RouteTracksToPlaylist(ctx, a.event.Author.ID, trackURLs); err != nil {
+		logger.With(zap.Error(err)).Error("Failed to route tracks to playlist", fields...)
 		return
 	}
 }
 
 // Validate validates the action
 func (a *AddTracksToPlaylist) Validate() error {
-	if a.playlistAdder == nil {
-		return fmt.Errorf("playlist adder is nil")
+	if a.trackRouter == nil {
+		return fmt.Errorf("track router is nil")
 	}
 	if a.event == nil {
 		return fmt.Errorf("message is nil")

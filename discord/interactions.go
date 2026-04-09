@@ -14,14 +14,21 @@ import (
 	"discordbot/utils/stringutil"
 )
 
+// InteractionRouter handles Spotify interaction callbacks triggered by Discord button clicks and modal submissions.
+type InteractionRouter interface {
+	HandlePlaylistSelection(ctx context.Context, messageID string, selectedPlaylistID string) error
+	HandleNewPlaylistConfirm(ctx context.Context, messageID string, playlistName string) error
+	HandleInteractionCancel(ctx context.Context, messageID string)
+}
+
 // InteractionSessionHandler handles interactions
 type InteractionSessionHandler struct {
-	// TODO: Config
+	interactionRouter InteractionRouter
 }
 
 // NewInteractionSessionHandler creates a new interaction session handler
-func NewInteractionSessionHandler() *InteractionSessionHandler {
-	return &InteractionSessionHandler{}
+func NewInteractionSessionHandler(router InteractionRouter) *InteractionSessionHandler {
+	return &InteractionSessionHandler{interactionRouter: router}
 }
 
 // String returns a string representation of the interaction session handler
@@ -57,12 +64,15 @@ func (h *InteractionSessionHandler) Handle(s *discordgo.Session, i *discordgo.In
 
 	logger.Info("Received interaction", fields...)
 
-	// Determine interaction responder function
 	switch i.Type {
 	case discordgo.InteractionPing:
 		h.ping(s, i)
 	case discordgo.InteractionApplicationCommand:
 		h.slashCommand(s, i)
+	case discordgo.InteractionMessageComponent:
+		h.componentInteraction(s, i)
+	case discordgo.InteractionModalSubmit:
+		h.modalSubmit(s, i)
 	default:
 		logger.Error("no responder for interaction type", fields...)
 	}
@@ -94,6 +104,139 @@ func (h *InteractionSessionHandler) slashCommand(s *discordgo.Session, i *discor
 		h.challengeCommand(s, i)
 	default:
 		logger.Error("unknown slash command", zap.String(zapkey.Command, data.Name))
+	}
+}
+
+// componentInteraction handles button and select-menu interactions from playlist routing prompts.
+func (h *InteractionSessionHandler) componentInteraction(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	data := i.MessageComponentData()
+	customID := data.CustomID
+
+	logger.Info("Handling component interaction", zap.String("custom_id", customID))
+
+	messageID := ""
+	if i.Message != nil {
+		messageID = i.Message.ID
+	}
+
+	// The "new_playlist" button responds with a modal — it must NOT send a deferred
+	// update first, since only one InteractionRespond call is allowed per interaction.
+	if customID == "new_playlist" {
+		modalCustomID := "new_playlist_modal:" + messageID
+		if err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+			Type: discordgo.InteractionResponseModal,
+			Data: &discordgo.InteractionResponseData{
+				CustomID: modalCustomID,
+				Title:    "New Playlist",
+				Components: []discordgo.MessageComponent{
+					discordgo.ActionsRow{
+						Components: []discordgo.MessageComponent{
+							discordgo.TextInput{
+								CustomID:    "playlist_name",
+								Label:       "Playlist name",
+								Style:       discordgo.TextInputShort,
+								Required:    true,
+								MinLength:   1,
+								MaxLength:   100,
+								Placeholder: "My Awesome Playlist",
+							},
+						},
+					},
+				},
+			},
+		}); err != nil {
+			logger.Error("failed to send new-playlist modal", zap.Error(err))
+		}
+		return
+	}
+
+	// For all other buttons: acknowledge immediately to avoid Discord's 3-second timeout,
+	// then perform the Spotify API work.
+	if err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+		Type: discordgo.InteractionResponseDeferredMessageUpdate,
+	}); err != nil {
+		logger.Error("failed to acknowledge component interaction", zap.Error(err))
+		return
+	}
+
+	if h.interactionRouter == nil {
+		logger.Warn("no interaction router configured")
+		return
+	}
+
+	ctx := context.Background()
+
+	switch {
+	case strings.HasPrefix(customID, "playlist_select:"):
+		// custom_id format: "playlist_select:<playlistID>"
+		playlistID := strings.TrimPrefix(customID, "playlist_select:")
+		if err := h.interactionRouter.HandlePlaylistSelection(ctx, messageID, playlistID); err != nil {
+			logger.Error("HandlePlaylistSelection failed", zap.Error(err))
+		}
+
+	case customID == "playlist_select_all":
+		if err := h.interactionRouter.HandlePlaylistSelection(ctx, messageID, "all"); err != nil {
+			logger.Error("HandlePlaylistSelection (all) failed", zap.Error(err))
+		}
+
+	case customID == "skip_playlist":
+		h.interactionRouter.HandleInteractionCancel(ctx, messageID)
+
+	default:
+		logger.Warn("unknown component custom_id", zap.String("custom_id", customID))
+	}
+}
+
+// modalSubmit handles modal submission for new playlist creation.
+func (h *InteractionSessionHandler) modalSubmit(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	data := i.ModalSubmitData()
+	customID := data.CustomID
+
+	logger.Info("Handling modal submit", zap.String("custom_id", customID))
+
+	// Acknowledge immediately
+	if err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+		Type: discordgo.InteractionResponseDeferredMessageUpdate,
+	}); err != nil {
+		logger.Error("failed to acknowledge modal submit", zap.Error(err))
+		return
+	}
+
+	if !strings.HasPrefix(customID, "new_playlist_modal:") {
+		logger.Warn("unknown modal custom_id", zap.String("custom_id", customID))
+		return
+	}
+
+	messageID := strings.TrimPrefix(customID, "new_playlist_modal:")
+
+	// Extract playlist name from the modal's text input
+	var playlistName string
+	for _, row := range data.Components {
+		actionsRow, ok := row.(*discordgo.ActionsRow)
+		if !ok {
+			continue
+		}
+		for _, comp := range actionsRow.Components {
+			input, ok := comp.(*discordgo.TextInput)
+			if ok && input.CustomID == "playlist_name" {
+				playlistName = input.Value
+			}
+		}
+	}
+
+	if playlistName == "" {
+		logger.Warn("playlist name was empty in modal submit")
+		return
+	}
+
+	if h.interactionRouter == nil {
+		logger.Warn("no interaction router configured")
+		return
+	}
+
+	ctx := context.Background()
+	if err := h.interactionRouter.HandleNewPlaylistConfirm(ctx, messageID, playlistName); err != nil {
+		logger.Error("HandleNewPlaylistConfirm failed", zap.Error(err))
 	}
 }
 

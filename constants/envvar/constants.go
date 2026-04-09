@@ -28,8 +28,9 @@ const (
 
 // Spotify-related constants
 const (
-	SpotifyPlaylistID = "SPOTIFY_PLAYLIST_ID"
-	SpotifyWorkerURL  = "SPOTIFY_WORKER_URL"
+	SpotifyPlaylistID     = "SPOTIFY_PLAYLIST_ID"
+	SpotifyPlaylistConfig = "SPOTIFY_PLAYLIST_CONFIG"
+	SpotifyWorkerURL      = "SPOTIFY_WORKER_URL"
 )
 
 // Cloudflare worker access

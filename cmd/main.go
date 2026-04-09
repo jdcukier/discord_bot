@@ -17,6 +17,7 @@ import (
 	discordchannel "discordbot/discord/channel"
 	discordconfig "discordbot/discord/config"
 	"discordbot/spotify"
+	"discordbot/spotify/registry"
 	"discordbot/utils/httputil"
 )
 
@@ -60,14 +61,21 @@ func main() {
 	}
 	clients = append(clients, debugClient)
 
+	// Load optional playlist registry
+	reg := loadRegistry()
+
 	// Initialize Spotify client
-	spotifyClient, err := spotify.NewClient()
+	spotifyOpts := []spotify.Option{}
+	if reg != nil {
+		spotifyOpts = append(spotifyOpts, spotify.WithRegistry(reg))
+	}
+	spotifyClient, err := spotify.NewClient(spotifyOpts...)
 	if err != nil {
 		logger.Fatal("Failed to create Spotify client", zap.Error(err))
 	}
 
 	// Initialize Discord client with the spotify client
-	discordClient := newDiscordClient(spotifyClient, readyMessage())
+	discordClient := newDiscordClient(spotifyClient, spotifyClient, readyMessage())
 	clients = append(clients, discordClient)
 
 	// Wire Discord health into the debug client's /health endpoint
@@ -108,7 +116,6 @@ func loadAndValidateEnv() {
 		envvar.DiscordAppID,
 		envvar.DiscordAuthChannelID,
 		envvar.DiscordSongsChannelID,
-		envvar.SpotifyPlaylistID,
 		envvar.SpotifyWorkerURL,
 		envvar.CFAccessClientID,
 		envvar.CFAccessClientSecret,
@@ -123,6 +130,25 @@ func loadAndValidateEnv() {
 		logger.Fatal("missing required environment variables",
 			zap.Strings("vars", missing))
 	}
+
+	// Warn if neither playlist config nor fallback ID is set
+	if os.Getenv(envvar.SpotifyPlaylistConfig) == "" && os.Getenv(envvar.SpotifyPlaylistID) == "" {
+		logger.Warn("neither SPOTIFY_PLAYLIST_CONFIG nor SPOTIFY_PLAYLIST_ID is set; tracks will not be routed")
+	}
+}
+
+// loadRegistry attempts to build a playlist registry from SPOTIFY_PLAYLIST_CONFIG.
+// Returns nil if the env var is unset (falls back to single-playlist mode).
+func loadRegistry() *registry.Registry {
+	configJSON := os.Getenv(envvar.SpotifyPlaylistConfig)
+	if configJSON == "" {
+		return nil
+	}
+	reg, err := registry.Load(configJSON)
+	if err != nil {
+		logger.Fatal("Failed to parse SPOTIFY_PLAYLIST_CONFIG", zap.Error(err))
+	}
+	return reg
 }
 
 func listeningActivity() string {
@@ -145,7 +171,7 @@ func readyMessage() string {
 	return fmt.Sprintf("%s\nVersion: %s", msg, version)
 }
 
-func newDiscordClient(playlistAdder discord.PlaylistAdder, botReadyMessage string) *discord.Client {
+func newDiscordClient(trackRouter discord.TrackRouter, interactionRouter discord.InteractionRouter, botReadyMessage string) *discord.Client {
 	config, err := discordconfig.NewConfig()
 	if err != nil {
 		logger.Fatal("Failed to create Discord config", zap.Error(err))
@@ -156,10 +182,10 @@ func newDiscordClient(playlistAdder discord.PlaylistAdder, botReadyMessage strin
 	for channelType, channelID := range config.ChannelIDs {
 		switch channelType {
 		case discordchannel.Songs:
-			// Add tracks to playlist for the Songs channel
+			// Route tracks to playlist for the Songs channel
 			actions.Add(channelID, discord.ActionAddTracksToPlaylist)
 		case discordchannel.Debug:
-			// Add tracks to playlist and send a reply for the Debug channel
+			// Route tracks to playlist and send a reply for the Debug channel
 			actions.Add(channelID, discord.ActionReply)
 			actions.Add(channelID, discord.ActionAddTracksToPlaylist)
 		default:
@@ -174,8 +200,8 @@ func newDiscordClient(playlistAdder discord.PlaylistAdder, botReadyMessage strin
 	// Handlers
 	handlers := []discord.Handler{
 		discord.NewReadyHandler(songsChannelID, botReadyMessage, listeningActivity()),
-		discord.NewMessageHandler(playlistAdder, actions),
-		discord.NewInteractionSessionHandler(),
+		discord.NewMessageHandler(trackRouter, actions),
+		discord.NewInteractionSessionHandler(interactionRouter),
 	}
 
 	// Create the client
