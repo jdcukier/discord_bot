@@ -6,7 +6,7 @@ require (
 	github.com/bwmarrin/discordgo v0.29.0
 	github.com/jdcukier/spotify/v2 v2.5.0
 	github.com/joho/godotenv v1.5.1
-	go.uber.org/zap v1.27.1
+	go.uber.org/zap v1.28.0
 )
 
 require (
