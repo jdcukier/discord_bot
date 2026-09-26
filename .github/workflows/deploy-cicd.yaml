@@ -44,7 +44,7 @@ jobs:
               chmod 600 ~/.ssh/config
 
           - name: Checkout repository
-            uses: actions/checkout@v4
+            uses: actions/checkout@v7
 
           - name: Copy docker-compose.yml to server
             run: |

@@ -106,6 +106,8 @@ jspm_packages/
 .env.local
 .env.*.local
 .wrangler
+# Generated from uv.lock by pywrangler on each dev/deploy
+pylock.toml
 
 # Editor/IDE
 .idea/
