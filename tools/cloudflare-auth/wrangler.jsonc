@@ -14,10 +14,20 @@
 	"observability": {
 		"enabled": true
 	},
+	// Serve only on the custom domain, which is protected by Cloudflare Access.
+	// workers.dev and preview URLs would bypass Access, so keep them off.
+	"routes": [
+		{
+			"pattern": "spotify.jcukier.dev",
+			"custom_domain": true
+		}
+	],
+	"workers_dev": false,
+	"preview_urls": false,
 	"kv_namespaces": [
 		{
 			"binding": "SPOTIFY_TOKENS",
-			"id": "6b2852ffddeb4f8ba6123018f53be018",
+			"id": "b8368a2a96a54726a2b62ae7f5553a64",
 			"remote": true
 		}
 	]
