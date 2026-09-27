@@ -1,8 +1,10 @@
 package config
 
 import (
-	"errors"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"discordbot/discord/channel"
 )
@@ -11,39 +13,49 @@ func TestLoadReadsNamespacedEnvVars(t *testing.T) {
 	t.Setenv("DISCORD_TOKEN_TEST", "token")
 	t.Setenv("DISCORD_APP_ID_TEST", "app-id")
 	t.Setenv("DISCORD_SONGS_CHANNEL_ID_TEST", "songs-id")
+	t.Setenv("BOT_READY_MESSAGE_TEST", "ready")
+	t.Setenv("BOT_LISTENING_MESSAGE_TEST", "listening")
 	// Un-namespaced and other-namespace vars must be ignored
 	t.Setenv("DISCORD_TOKEN", "wrong-token")
 	t.Setenv("DISCORD_AUTH_CHANNEL_ID_OTHER", "wrong-auth-id")
+	t.Setenv("BOT_READY_MESSAGE", "wrong-ready")
 
 	c, err := Load("TEST")
-	if err != nil {
-		t.Fatalf("Load() error = %v", err)
-	}
-	if c.Namespace != "TEST" || c.Token != "token" || c.AppID != "app-id" {
-		t.Errorf("Load() = %+v, want namespace TEST, token and app-id from TEST vars", c)
-	}
-	if got := c.ChannelIDs[channel.Songs]; got != "songs-id" {
-		t.Errorf("Songs channel ID = %q, want %q", got, "songs-id")
-	}
-	if _, ok := c.ChannelIDs[channel.Auth]; ok {
-		t.Errorf("Auth channel ID set to %q, want unset", c.ChannelIDs[channel.Auth])
-	}
+	require.NoError(t, err)
+
+	assert.Equal(t, "TEST", c.Namespace)
+	assert.Equal(t, "token", c.Token)
+	assert.Equal(t, "app-id", c.AppID)
+	assert.Equal(t, "ready", c.ReadyMessage)
+	assert.Equal(t, "listening", c.ListeningMessage)
+	assert.Equal(t, map[channel.Type]string{channel.Songs: "songs-id"}, c.ChannelIDs)
+}
+
+func TestLoadOptionalMessagesDefaultEmpty(t *testing.T) {
+	t.Setenv("DISCORD_TOKEN_TEST", "token")
+	t.Setenv("DISCORD_APP_ID_TEST", "app-id")
+
+	c, err := Load("TEST")
+	require.NoError(t, err)
+
+	assert.Empty(t, c.ReadyMessage)
+	assert.Empty(t, c.ListeningMessage)
+	assert.Empty(t, c.ChannelIDs)
 }
 
 func TestLoadNotConfigured(t *testing.T) {
 	_, err := Load("MISSING")
-	if !errors.Is(err, ErrNotConfigured) {
-		t.Fatalf("Load() error = %v, want ErrNotConfigured", err)
-	}
+
+	assert.ErrorIs(t, err, ErrNotConfigured)
 }
 
 func TestLoadRequiresAppID(t *testing.T) {
 	t.Setenv("DISCORD_TOKEN_NOAPP", "token")
 
 	_, err := Load("NOAPP")
-	if err == nil || errors.Is(err, ErrNotConfigured) {
-		t.Fatalf("Load() error = %v, want an invalid-config error", err)
-	}
+
+	require.Error(t, err)
+	assert.NotErrorIs(t, err, ErrNotConfigured)
 }
 
 func TestRequireChannels(t *testing.T) {
@@ -51,10 +63,7 @@ func TestRequireChannels(t *testing.T) {
 		Namespace:  "TEST",
 		ChannelIDs: map[channel.Type]string{channel.Songs: "songs-id"},
 	}
-	if err := c.RequireChannels(channel.Songs); err != nil {
-		t.Errorf("RequireChannels(Songs) error = %v, want nil", err)
-	}
-	if err := c.RequireChannels(channel.Songs, channel.Auth); err == nil {
-		t.Error("RequireChannels(Songs, Auth) error = nil, want missing Auth error")
-	}
+
+	assert.NoError(t, c.RequireChannels(channel.Songs))
+	assert.ErrorContains(t, c.RequireChannels(channel.Songs, channel.Auth), "DISCORD_AUTH_CHANNEL_ID_TEST")
 }

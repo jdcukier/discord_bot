@@ -27,6 +27,10 @@ type Config struct {
 	Token      string
 	AppID      string
 	ChannelIDs map[channel.Type]string
+
+	// Optional; each bot applies its own defaults when empty
+	ReadyMessage     string // Posted when the bot comes online
+	ListeningMessage string // Shown as the bot's "Listening to" activity
 }
 
 // Load creates the configuration for the bot in the given namespace, reading
@@ -34,10 +38,12 @@ type Config struct {
 // Returns ErrNotConfigured if the namespace has no token set.
 func Load(namespace string, opts ...Option) (*Config, error) {
 	c := &Config{
-		Namespace:  namespace,
-		Token:      os.Getenv(envvar.Namespaced(envvar.DiscordToken, namespace)),
-		AppID:      os.Getenv(envvar.Namespaced(envvar.DiscordAppID, namespace)),
-		ChannelIDs: make(map[channel.Type]string),
+		Namespace:        namespace,
+		Token:            os.Getenv(envvar.Namespaced(envvar.DiscordToken, namespace)),
+		AppID:            os.Getenv(envvar.Namespaced(envvar.DiscordAppID, namespace)),
+		ChannelIDs:       make(map[channel.Type]string),
+		ReadyMessage:     os.Getenv(envvar.Namespaced(envvar.BotReadyMessage, namespace)),
+		ListeningMessage: os.Getenv(envvar.Namespaced(envvar.BotListeningMessage, namespace)),
 	}
 	for channelType, key := range channelEnvVars {
 		if id := os.Getenv(envvar.Namespaced(key, namespace)); id != "" {
