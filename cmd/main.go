@@ -1,4 +1,4 @@
-// Package main provides the entry point for the Discord bot
+// Package main provides the entry point for the Discord bots
 package main
 
 import (
@@ -28,7 +28,13 @@ type Client interface {
 
 // main entry point for the application
 func main() {
-	// Initialize logger first
+	if err := run(); err != nil {
+		logger.Fatal("Exiting", zap.Error(err))
+	}
+}
+
+// run starts the service and blocks until the HTTP server stops
+func run() error {
 	defer func() {
 		if err := logger.Sync(); err != nil {
 			logger.Error("Failed to sync logger", zap.Error(err))
@@ -36,18 +42,24 @@ func main() {
 	}()
 
 	// Load and validate environment variables
-	loadAndValidateEnv()
+	if err := loadAndValidateEnv(); err != nil {
+		return err
+	}
 
 	// Start the HTTP server
 	port := httputil.Port()
 	logger.Info("Starting server", zap.String(zapkey.Port, port))
+	serverErr := make(chan error, 1)
 	go func() {
-		if err := http.ListenAndServe(port, nil); err != nil {
-			logger.Fatal("Failed to start server", zap.Error(err), zap.String(zapkey.Port, port))
-		}
+		serverErr <- http.ListenAndServe(port, nil)
 	}()
-	// Give the server a moment to start
+	// Give the server a moment to start, and fail fast if it couldn't
 	time.Sleep(100 * time.Millisecond)
+	select {
+	case err := <-serverErr:
+		return fmt.Errorf("failed to start server on %s: %w", port, err)
+	default:
+	}
 
 	// Initialize clients
 	var clients []Client
@@ -56,33 +68,29 @@ func main() {
 	// Note: This must be initialized first since it hosts the root HTTP path
 	debugClient, err := debug.NewClient()
 	if err != nil {
-		logger.Fatal("Failed to create Debug client", zap.Error(err))
+		return fmt.Errorf("failed to create Debug client: %w", err)
 	}
 	clients = append(clients, debugClient)
 
 	// Initialize Spotify client
 	spotifyClient, err := spotify.NewClient()
 	if err != nil {
-		logger.Fatal("Failed to create Spotify client", zap.Error(err))
+		return fmt.Errorf("failed to create Spotify client: %w", err)
 	}
 
-	// Initialize Discord client with the spotify client
-	discordClient := newDiscordClient(spotifyClient, readyMessage())
-	clients = append(clients, discordClient)
+	// Initialize the Spotify Discord bot with the spotify client
+	spotifyBot, err := newSpotifyBot(spotifyClient)
+	if err != nil {
+		return fmt.Errorf("failed to create Spotify Discord bot: %w", err)
+	}
+	clients = append(clients, spotifyBot)
 
 	// Wire Discord health into the debug client's /health endpoint
-	debugClient.SetHealthChecker(discordClient)
+	debugClient.AddHealthChecker(spotifyBot)
 
 	// Update spotify client with discord messenger
-	spotifyClient.SetMessenger(discordClient)
+	spotifyClient.SetMessenger(spotifyBot)
 	clients = append(clients, spotifyClient)
-
-	// Start clients
-	for _, client := range clients {
-		if err := client.Start(); err != nil {
-			logger.Fatal("Failed to start client", zap.Error(err), zap.Stringer(zapkey.Client, client))
-		}
-	}
 
 	// Stop clients when the program exits
 	defer func() {
@@ -93,21 +101,28 @@ func main() {
 		}
 	}()
 
-	// Wait for server shutdown (this will block forever)
-	select {}
+	// Start clients
+	for _, client := range clients {
+		if err := client.Start(); err != nil {
+			return fmt.Errorf("failed to start %s: %w", client, err)
+		}
+	}
+
+	// Block until the HTTP server stops
+	return fmt.Errorf("server stopped: %w", <-serverErr)
 }
 
 // --- Helpers ---
 
-func loadAndValidateEnv() {
+func loadAndValidateEnv() error {
 	if err := godotenv.Load(); err != nil {
 		logger.Info("No .env file found or unreadable; proceeding with system environment", zap.Error(err))
 	}
 	required := []string{
-		envvar.DiscordToken,
-		envvar.DiscordAppID,
-		envvar.DiscordAuthChannelID,
-		envvar.DiscordSongsChannelID,
+		envvar.Namespaced(envvar.DiscordToken, envvar.NamespaceSpotify),
+		envvar.Namespaced(envvar.DiscordAppID, envvar.NamespaceSpotify),
+		envvar.Namespaced(envvar.DiscordAuthChannelID, envvar.NamespaceSpotify),
+		envvar.Namespaced(envvar.DiscordSongsChannelID, envvar.NamespaceSpotify),
 		envvar.SpotifyPlaylistID,
 		envvar.SpotifyWorkerURL,
 		envvar.CFAccessClientID,
@@ -120,24 +135,13 @@ func loadAndValidateEnv() {
 		}
 	}
 	if len(missing) > 0 {
-		logger.Fatal("missing required environment variables",
-			zap.Strings("vars", missing))
+		return fmt.Errorf("missing required environment variables: %v", missing)
 	}
+	return nil
 }
 
-func listeningActivity() string {
-	msg := os.Getenv(envvar.BotListeningMessage)
-	if msg == "" {
-		msg = "song requests"
-	}
-	return msg
-}
-
-func readyMessage() string {
-	msg := os.Getenv(envvar.BotReadyMessage)
-	if msg == "" {
-		msg = "Bot is online. Ready to record your songs."
-	}
+// withVersion appends the bot version to a ready message
+func withVersion(msg string) string {
 	version := os.Getenv(envvar.BotVersion)
 	if version == "" {
 		version = "Unknown version"
@@ -145,10 +149,14 @@ func readyMessage() string {
 	return fmt.Sprintf("%s\nVersion: %s", msg, version)
 }
 
-func newDiscordClient(playlistAdder discord.PlaylistAdder, botReadyMessage string) *discord.Client {
-	config, err := discordconfig.NewConfig()
+// newSpotifyBot creates the Discord bot that collects songs into the Spotify playlist
+func newSpotifyBot(playlistAdder discord.PlaylistAdder) (*discord.Client, error) {
+	config, err := discordconfig.Load(envvar.NamespaceSpotify)
 	if err != nil {
-		logger.Fatal("Failed to create Discord config", zap.Error(err))
+		return nil, err
+	}
+	if err := config.RequireChannels(discordchannel.Auth, discordchannel.Songs); err != nil {
+		return nil, err
 	}
 
 	// Actions to perform when a message is received
@@ -169,19 +177,23 @@ func newDiscordClient(playlistAdder discord.PlaylistAdder, botReadyMessage strin
 		}
 	}
 
+	readyMessage := config.ReadyMessage
+	if readyMessage == "" {
+		readyMessage = "Bot is online. Ready to record your songs."
+	}
+	listeningMessage := config.ListeningMessage
+	if listeningMessage == "" {
+		listeningMessage = "song requests"
+	}
 	songsChannelID := config.ChannelIDs[discordchannel.Songs]
 
 	// Handlers
 	handlers := []discord.Handler{
-		discord.NewReadyHandler(songsChannelID, botReadyMessage, listeningActivity()),
+		discord.NewReadyHandler(songsChannelID, withVersion(readyMessage), listeningMessage),
 		discord.NewMessageHandler(playlistAdder, actions),
 		discord.NewInteractionSessionHandler(),
 	}
 
 	// Create the client
-	discordClient, err := discord.NewClient(discord.WithHandlers(handlers...))
-	if err != nil {
-		logger.Fatal("Failed to create Discord client", zap.Error(err))
-	}
-	return discordClient
+	return discord.NewClient(discord.WithConfig(config), discord.WithHandlers(handlers...))
 }

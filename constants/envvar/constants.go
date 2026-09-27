@@ -5,8 +5,6 @@ package envvar
 const (
 	VerboseLogsEnabled = "VERBOSE_LOGS_ENABLED"
 	BotVersion         = "BOT_VERSION"
-	BotReadyMessage    = "BOT_READY_MESSAGE"
-	BotListeningMessage = "BOT_LISTENING_MESSAGE"
 )
 
 // HTTP-related constants
@@ -15,6 +13,7 @@ const (
 )
 
 // Discord-related constants
+// These are per-bot: read them with Namespaced, e.g. DISCORD_TOKEN_SPOTIFY
 const (
 	// Authentication
 	DiscordAppID = "DISCORD_APP_ID"
@@ -24,7 +23,21 @@ const (
 	DiscordAuthChannelID  = "DISCORD_AUTH_CHANNEL_ID"
 	DiscordDebugChannelID = "DISCORD_DEBUG_CHANNEL_ID"
 	DiscordSongsChannelID = "DISCORD_SONGS_CHANNEL_ID"
+
+	// Bot presence
+	BotReadyMessage     = "BOT_READY_MESSAGE"
+	BotListeningMessage = "BOT_LISTENING_MESSAGE"
 )
+
+// Bot namespaces used to suffix per-bot env vars
+const (
+	NamespaceSpotify = "SPOTIFY"
+)
+
+// Namespaced returns the per-bot form of an env var key, e.g. DISCORD_TOKEN_SPOTIFY
+func Namespaced(key, namespace string) string {
+	return key + "_" + namespace
+}
 
 // Spotify-related constants
 const (

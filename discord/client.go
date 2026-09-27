@@ -33,13 +33,9 @@ func NewClient(options ...Option) (*Client, error) {
 		opt(c)
 	}
 
-	// If a config wasn't provided, create the default config
+	// Each bot loads its own namespaced config, so there is no default
 	if c.config == nil {
-		config, err := config.NewConfig()
-		if err != nil {
-			return nil, fmt.Errorf("failed to create config: %w", err)
-		}
-		c.config = config
+		return nil, fmt.Errorf("discord client config is required")
 	}
 
 	// If a session wasn't provided, create a new one
@@ -98,6 +94,9 @@ func (c *Client) registerHandlers() error {
 
 // String returns a string representation of the client
 func (c *Client) String() string {
+	if c.config != nil && c.config.Namespace != "" {
+		return "Discord Client (" + c.config.Namespace + ")"
+	}
 	return "Discord Client"
 }
 
