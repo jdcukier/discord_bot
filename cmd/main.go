@@ -1,7 +1,8 @@
-// Package main provides the entry point for the Discord bot
+// Package main provides the entry point for the Discord bots
 package main
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -66,21 +67,32 @@ func main() {
 		logger.Fatal("Failed to create Spotify client", zap.Error(err))
 	}
 
-	// Initialize Discord client with the spotify client
-	discordClient := newDiscordClient(spotifyClient, readyMessage())
-	clients = append(clients, discordClient)
+	// Initialize the Spotify Discord bot with the spotify client
+	spotifyBot := newSpotifyBot(spotifyClient, readyMessage())
+	clients = append(clients, spotifyBot)
 
 	// Wire Discord health into the debug client's /health endpoint
-	debugClient.SetHealthChecker(discordClient)
+	debugClient.AddHealthChecker(spotifyBot)
 
 	// Update spotify client with discord messenger
-	spotifyClient.SetMessenger(discordClient)
+	spotifyClient.SetMessenger(spotifyBot)
 	clients = append(clients, spotifyClient)
 
 	// Start clients
 	for _, client := range clients {
 		if err := client.Start(); err != nil {
 			logger.Fatal("Failed to start client", zap.Error(err), zap.Stringer(zapkey.Client, client))
+		}
+	}
+
+	// Start the Arcade Discord bot. It's optional: if it isn't configured or
+	// fails to start, the other clients keep running.
+	if arcadeBot := newArcadeBot(); arcadeBot != nil {
+		if err := arcadeBot.Start(); err != nil {
+			logger.Error("Failed to start client", zap.Error(err), zap.Stringer(zapkey.Client, arcadeBot))
+		} else {
+			clients = append(clients, arcadeBot)
+			debugClient.AddHealthChecker(arcadeBot)
 		}
 	}
 
@@ -103,11 +115,12 @@ func loadAndValidateEnv() {
 	if err := godotenv.Load(); err != nil {
 		logger.Info("No .env file found or unreadable; proceeding with system environment", zap.Error(err))
 	}
+	// Only the Spotify bot is required; the Arcade bot is skipped when unset
 	required := []string{
-		envvar.DiscordToken,
-		envvar.DiscordAppID,
-		envvar.DiscordAuthChannelID,
-		envvar.DiscordSongsChannelID,
+		envvar.Namespaced(envvar.DiscordToken, envvar.NamespaceSpotify),
+		envvar.Namespaced(envvar.DiscordAppID, envvar.NamespaceSpotify),
+		envvar.Namespaced(envvar.DiscordAuthChannelID, envvar.NamespaceSpotify),
+		envvar.Namespaced(envvar.DiscordSongsChannelID, envvar.NamespaceSpotify),
 		envvar.SpotifyPlaylistID,
 		envvar.SpotifyWorkerURL,
 		envvar.CFAccessClientID,
@@ -145,10 +158,14 @@ func readyMessage() string {
 	return fmt.Sprintf("%s\nVersion: %s", msg, version)
 }
 
-func newDiscordClient(playlistAdder discord.PlaylistAdder, botReadyMessage string) *discord.Client {
-	config, err := discordconfig.NewConfig()
+// newSpotifyBot creates the Discord bot that collects songs into the Spotify playlist
+func newSpotifyBot(playlistAdder discord.PlaylistAdder, botReadyMessage string) *discord.Client {
+	config, err := discordconfig.Load(envvar.NamespaceSpotify)
 	if err != nil {
-		logger.Fatal("Failed to create Discord config", zap.Error(err))
+		logger.Fatal("Failed to create Spotify Discord config", zap.Error(err))
+	}
+	if err := config.RequireChannels(discordchannel.Auth, discordchannel.Songs); err != nil {
+		logger.Fatal("Invalid Spotify Discord config", zap.Error(err))
 	}
 
 	// Actions to perform when a message is received
@@ -179,9 +196,35 @@ func newDiscordClient(playlistAdder discord.PlaylistAdder, botReadyMessage strin
 	}
 
 	// Create the client
-	discordClient, err := discord.NewClient(discord.WithHandlers(handlers...))
+	discordClient, err := discord.NewClient(discord.WithConfig(config), discord.WithHandlers(handlers...))
 	if err != nil {
-		logger.Fatal("Failed to create Discord client", zap.Error(err))
+		logger.Fatal("Failed to create Spotify Discord client", zap.Error(err))
+	}
+	return discordClient
+}
+
+// newArcadeBot creates the Discord bot for the arcade.
+// Returns nil if the bot isn't configured or can't be created.
+func newArcadeBot() *discord.Client {
+	config, err := discordconfig.Load(envvar.NamespaceArcade)
+	if errors.Is(err, discordconfig.ErrNotConfigured) {
+		logger.Info("Arcade Discord bot not configured; skipping", zap.Error(err))
+		return nil
+	}
+	if err != nil {
+		logger.Error("Failed to create Arcade Discord config", zap.Error(err))
+		return nil
+	}
+
+	// Placeholder until the arcade commands are added: comes online, does nothing
+	handlers := []discord.Handler{
+		discord.NewReadyHandler("", "", ""),
+	}
+
+	discordClient, err := discord.NewClient(discord.WithConfig(config), discord.WithHandlers(handlers...))
+	if err != nil {
+		logger.Error("Failed to create Arcade Discord client", zap.Error(err))
+		return nil
 	}
 	return discordClient
 }

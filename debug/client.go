@@ -19,7 +19,7 @@ type HealthChecker interface {
 
 // Client for debugging this service
 type Client struct {
-	healthChecker HealthChecker
+	healthCheckers []HealthChecker
 }
 
 // NewClient creates a new debug client
@@ -27,9 +27,23 @@ func NewClient() (*Client, error) {
 	return &Client{}, nil
 }
 
-// SetHealthChecker sets the health checker used by the /health endpoint.
-func (c *Client) SetHealthChecker(hc HealthChecker) {
-	c.healthChecker = hc
+// AddHealthChecker adds a health checker used by the /health endpoint.
+// The service is healthy only when every added checker is healthy.
+func (c *Client) AddHealthChecker(hc HealthChecker) {
+	c.healthCheckers = append(c.healthCheckers, hc)
+}
+
+// healthy reports whether at least one checker is registered and all are healthy
+func (c *Client) healthy() bool {
+	if len(c.healthCheckers) == 0 {
+		return false
+	}
+	for _, hc := range c.healthCheckers {
+		if !hc.Healthy() {
+			return false
+		}
+	}
+	return true
 }
 
 func (c *Client) String() string {
@@ -66,7 +80,7 @@ func homeHandler(w http.ResponseWriter, r *http.Request) {
 // healthHandler handles the health check route.
 // Returns 200 if the health checker reports healthy, 503 otherwise.
 func (c *Client) healthHandler(w http.ResponseWriter, r *http.Request) {
-	if c.healthChecker == nil || !c.healthChecker.Healthy() {
+	if !c.healthy() {
 		w.WriteHeader(http.StatusServiceUnavailable)
 		if _, err := fmt.Fprintf(w, "Discord not connected"); err != nil {
 			logger.Error("Failed to write response", zap.Error(err), zap.String(zapkey.Path, r.URL.Path))
@@ -82,9 +96,9 @@ func (c *Client) healthHandler(w http.ResponseWriter, r *http.Request) {
 
 // testEndpointHandler handles the test endpoint route
 func testEndpointHandler(w http.ResponseWriter, r *http.Request) {
-	appID := os.Getenv(envvar.DiscordAppID)
+	key := envvar.Namespaced(envvar.DiscordAppID, envvar.NamespaceSpotify)
 	w.WriteHeader(http.StatusOK)
-	if _, err := fmt.Fprintf(w, "Test endpoint - DISCORD_APP_ID: %s", appID); err != nil {
+	if _, err := fmt.Fprintf(w, "Test endpoint - %s: %s", key, os.Getenv(key)); err != nil {
 		logger.Error("Failed to write response", zap.Error(err), zap.String(zapkey.Path, r.URL.Path))
 	}
 }
