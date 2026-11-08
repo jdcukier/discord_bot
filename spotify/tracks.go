@@ -17,17 +17,17 @@ import (
 
 // -- Tracks ---
 
-// AddTracksToPlaylist adds tracks to a playlist from a list of track URLs.
-// If the user has no Spotify token, auth is triggered and the track is retried automatically.
-func (c *Client) AddTracksToPlaylist(ctx context.Context, userID, playlistID string, trackURLs []string) error {
-	err := c.doAddTracks(ctx, userID, playlistID, trackURLs)
+// AddTracksToPlaylist adds tracks to each of the given playlists from a list of track URLs.
+// If the user has no Spotify token, auth is triggered once and every playlist is retried automatically.
+func (c *Client) AddTracksToPlaylist(ctx context.Context, userID string, trackURLs []string, playlistIDs ...string) error {
+	err := c.doAddTracksToPlaylists(ctx, userID, trackURLs, playlistIDs)
 
 	if err == nil {
 		return nil
 	}
 
 	if errors.Is(err, worker.ErrAuthRequired) {
-		c.handleAuthRequired(ctx, userID, playlistID, trackURLs)
+		c.handleAuthRequired(ctx, userID, trackURLs, playlistIDs)
 		return nil // Return nil because we've handled/queued the retry
 	}
 
@@ -37,16 +37,38 @@ func (c *Client) AddTracksToPlaylist(ctx context.Context, userID, playlistID str
 
 // handleAuthRequired notifies the user that Spotify auth is needed, then queues
 // the track-add operation to be retried automatically after auth completes.
-func (c *Client) handleAuthRequired(ctx context.Context, userID, playlistID string, trackURLs []string) {
+func (c *Client) handleAuthRequired(ctx context.Context, userID string, trackURLs, playlistIDs []string) {
 	c.reportToDiscord(ctx, fmt.Sprintf("⚠️ <@%s> Spotify auth needed...", userID))
 
 	c.triggerAuthIfNeeded(ctx, userID, func(authCtx context.Context) {
-		if retryErr := c.doAddTracks(authCtx, userID, playlistID, trackURLs); retryErr != nil {
+		if retryErr := c.doAddTracksToPlaylists(authCtx, userID, trackURLs, playlistIDs); retryErr != nil {
 			c.reportToDiscord(authCtx, fmt.Sprintf("❌ <@%s> Could not add track: %v", userID, retryErr))
 			return
 		}
 		c.reportToDiscord(authCtx, fmt.Sprintf("✅ <@%s> Your track was added!", userID))
 	})
+}
+
+// doAddTracksToPlaylists adds tracks to each playlist. A failure for one playlist doesn't
+// stop the others, except auth failures, which apply to every playlist and are returned immediately.
+func (c *Client) doAddTracksToPlaylists(ctx context.Context, userID string, trackURLs, playlistIDs []string) error {
+	if len(playlistIDs) == 0 {
+		return fmt.Errorf("no playlist IDs provided")
+	}
+	var errs []error
+	for _, playlistID := range playlistIDs {
+		err := c.doAddTracks(ctx, userID, playlistID, trackURLs)
+		if errors.Is(err, worker.ErrAuthRequired) {
+			return err
+		}
+		if err != nil && len(playlistIDs) > 1 {
+			err = fmt.Errorf("playlist %s: %w", playlistID, err)
+		}
+		if err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
 }
 
 // doAddTracks performs the raw Spotify API calls to add tracks. No auth retry logic.

@@ -33,10 +33,12 @@ const (
 	Content         = "content"
 	Message         = "message"
 	PlaylistID      = "playlist_id"
+	PlaylistIDs     = "playlist_ids"
 	PlaylistOwnerID = "playlist_owner_id"
 	Reply           = "reply"
 	TrackID         = "track_id"
 	TrackIDs        = "track_ids"
 	TrackURLs       = "track_urls"
+	Triggers        = "triggers"
 	TokenUserID     = "token_user_id"
 )
