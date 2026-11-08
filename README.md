@@ -49,16 +49,18 @@ https://open.spotify.com/playlist/37i9dQZF1DXcBWIGoYBM5M?si=abc123
 ### Example
 
 ```
-relax=<RELAX_ID>;relaxing=<RELAX_ID>;both=<DEFAULT_ID>,<RELAX_ID>
+relax=<RELAX_ID>;relaxing=<RELAX_ID>;relaxtoo=<DEFAULT_ID>,<RELAX_ID>
 ```
 
 | Tag | Adds to |
 | --- | --- |
 | `!relax`, `!relaxing` | The relax playlist |
-| `!both` | The default playlist and the relax playlist |
+| `!relaxtoo` | The default playlist and the relax playlist |
 | `!default` | The default playlist (built in) |
 
 A tag that should also add to the default playlist just lists the default playlist's ID, i.e. the value of `SPOTIFY_PLAYLIST_ID`. If the default playlist ever changes, update those tags too.
+
+**Pick names that say what the tag does.** Generic names like `!both`, `!all` or `!misc` stop making sense once more playlists exist. Names like `!play` or `!help` collide with other bots' commands, and near-duplicates like `!relax`/`!relaxx` are easy to mix up.
 
 ### Applying changes
 
