@@ -56,9 +56,13 @@ jobs:
             id: build
             run: |
               ssh -T -q -o StrictHostKeyChecking=no ${{ secrets.PROD_SSH_HOST }} '
+              set -e;
               cd ~;
               printf "SPOTIFY_WORKER_URL=%s\n" "${{ secrets.SPOTIFY_WORKER_URL }}" > .env.tmp
               printf "SPOTIFY_PLAYLIST_ID=%s\n" "${{ secrets.SPOTIFY_PLAYLIST_ID }}" >> .env.tmp;
+              printf "SPOTIFY_PLAYLIST_TRIGGERS=%s\n" "${{ secrets.SPOTIFY_PLAYLIST_TRIGGERS }}" >> .env.tmp;
+              printf "SPOTIFY_TRIGGER_PREFIX=%s\n" "${{ secrets.SPOTIFY_TRIGGER_PREFIX }}" >> .env.tmp;
+              printf "SPOTIFY_REPLY_UNKNOWN_TRIGGERS=%s\n" "${{ secrets.SPOTIFY_REPLY_UNKNOWN_TRIGGERS }}" >> .env.tmp;
 
               printf "CF_ACCESS_CLIENT_ID=%s\n" "${{ secrets.CF_ACCESS_CLIENT_ID }}" >> .env.tmp;
               printf "CF_ACCESS_CLIENT_SECRET=%s\n" "${{ secrets.CF_ACCESS_CLIENT_SECRET }}" >> .env.tmp;
@@ -81,18 +85,35 @@ jobs:
           - name: Verify Service Health
             id: health
             run: |
+              # The container must stay running without restarting for several polls in a row,
+              # so a crash loop that is briefly "running" between restarts doesn't pass
               STATUS="unknown"
-              DEADLINE=$((SECONDS + 30))
+              STABLE=0
+              REQUIRED_STABLE=4
+              LAST_RESTARTS=""
+              DEADLINE=$((SECONDS + 45))
 
               while [ $SECONDS -lt $DEADLINE ]; do
-                STATUS=$(ssh -T -q -o StrictHostKeyChecking=no ${{ secrets.PROD_SSH_HOST }} \
-                  'docker inspect -f "{{.State.Status}}" discord-bot 2>/dev/null || echo "not found"')
-                echo "Container status: $STATUS"
-                if [ "$STATUS" = "running" ]; then
+                STATE=$(ssh -T -q -o StrictHostKeyChecking=no ${{ secrets.PROD_SSH_HOST }} \
+                  'docker inspect -f "{{.State.Status}} {{.RestartCount}}" discord-bot 2>/dev/null || echo "not-found -1"')
+                read -r STATUS RESTARTS <<< "$STATE"
+                echo "Container status: $STATUS (restarts: $RESTARTS)"
+                if [ "$STATUS" = "running" ] && [ "$RESTARTS" = "$LAST_RESTARTS" ]; then
+                  STABLE=$((STABLE + 1))
+                elif [ "$STATUS" = "running" ]; then
+                  STABLE=1
+                else
+                  STABLE=0
+                fi
+                LAST_RESTARTS="$RESTARTS"
+                if [ $STABLE -ge $REQUIRED_STABLE ]; then
                   break
                 fi
                 sleep 3
               done
+              if [ "$STATUS" = "running" ] && [ $STABLE -lt $REQUIRED_STABLE ]; then
+                STATUS="unstable"
+              fi
 
               INSPECT=$(ssh -T -q -o StrictHostKeyChecking=no ${{ secrets.PROD_SSH_HOST }} \
                 'docker inspect discord-bot --format="{{json .State}}" 2>&1 || true')
@@ -119,7 +140,7 @@ jobs:
               echo '```' >> $GITHUB_STEP_SUMMARY
 
               if [ "$STATUS" != "running" ]; then
-                echo "❌ discord-bot container is not running after 30s (status: $STATUS)"
+                echo "❌ discord-bot container is not running steadily after 45s (status: $STATUS)"
                 exit 1
               fi
               echo "✅ discord-bot container is running"

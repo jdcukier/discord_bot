@@ -3,8 +3,10 @@ package main
 
 import (
 	"fmt"
+	"maps"
 	"net/http"
 	"os"
+	"slices"
 	"time"
 
 	"github.com/joho/godotenv"
@@ -17,6 +19,7 @@ import (
 	discordchannel "discordbot/discord/channel"
 	discordconfig "discordbot/discord/config"
 	"discordbot/spotify"
+	"discordbot/spotify/trigger"
 	"discordbot/utils/httputil"
 )
 
@@ -187,10 +190,24 @@ func newSpotifyBot(playlistAdder discord.PlaylistAdder) (*discord.Client, error)
 	}
 	songsChannelID := config.ChannelIDs[discordchannel.Songs]
 
+	// Triggers that route tracks to playlists other than the default.
+	// An invalid trigger config shouldn't take the bot down, so fall back to the default playlist only.
+	triggers, err := trigger.Load()
+	if err != nil {
+		logger.Error("Invalid playlist triggers; adding to the default playlist only", zap.Error(err))
+		triggers = nil
+	} else {
+		var triggerNames []string
+		for _, name := range slices.Sorted(maps.Keys(triggers.Playlists)) {
+			triggerNames = append(triggerNames, triggers.Prefix+name)
+		}
+		logger.Info("Loaded playlist triggers", zap.Strings(zapkey.Triggers, triggerNames))
+	}
+
 	// Handlers
 	handlers := []discord.Handler{
 		discord.NewReadyHandler(songsChannelID, withVersion(readyMessage), listeningMessage),
-		discord.NewMessageHandler(playlistAdder, actions),
+		discord.NewMessageHandler(playlistAdder, actions, discord.WithPlaylistTriggers(triggers)),
 		discord.NewInteractionSessionHandler(),
 	}
 

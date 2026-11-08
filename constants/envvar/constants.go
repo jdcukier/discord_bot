@@ -43,6 +43,11 @@ func Namespaced(key, namespace string) string {
 const (
 	SpotifyPlaylistID = "SPOTIFY_PLAYLIST_ID"
 	SpotifyWorkerURL  = "SPOTIFY_WORKER_URL"
+
+	// Playlist triggers
+	SpotifyPlaylistTriggers     = "SPOTIFY_PLAYLIST_TRIGGERS"
+	SpotifyTriggerPrefix        = "SPOTIFY_TRIGGER_PREFIX"
+	SpotifyReplyUnknownTriggers = "SPOTIFY_REPLY_UNKNOWN_TRIGGERS"
 )
 
 // Cloudflare worker access
