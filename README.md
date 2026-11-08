@@ -6,7 +6,7 @@ Testing out discord bot integration
 Post a Spotify track link in the songs channel and the bot adds it to a playlist. Add one or more **tags** to choose which playlists it goes to:
 
 ```
-https://open.spotify.com/track/6adFsinyuxpOTkN4QmwwOt !relaxing
+https://open.spotify.com/track/4PTG3Z6ehGkBFwjybzWkR8 !relaxing
 ```
 
 | Message | Result |
