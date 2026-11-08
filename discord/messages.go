@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/bwmarrin/discordgo"
 	"go.uber.org/zap"
@@ -13,6 +14,7 @@ import (
 	"discordbot/discord/channel"
 	"discordbot/log"
 	"discordbot/spotify/track"
+	"discordbot/spotify/trigger"
 	"discordbot/utils/ctxutil"
 )
 
@@ -25,9 +27,9 @@ const (
 
 // --- Interfaces ---
 
-// PlaylistAdder is an interface for adding tracks to a playlist
+// PlaylistAdder is an interface for adding tracks to playlists
 type PlaylistAdder interface {
-	AddTracksToPlaylist(ctx context.Context, userID string, playlistID string, trackURLs []string) error
+	AddTracksToPlaylist(ctx context.Context, userID string, trackURLs []string, playlistIDs ...string) error
 }
 
 // --- Message Sender ---
@@ -54,12 +56,27 @@ func (c *Client) SendMessage(ctx context.Context, channelType string, message st
 // MessageHandler handles message events
 type MessageHandler struct {
 	playlistAdder PlaylistAdder
-	actionIDs     ChannelActions // Map of channel IDs to actions to take for that channel
+	actionIDs     ChannelActions  // Map of channel IDs to actions to take for that channel
+	triggers      *trigger.Config // Optional playlist triggers; nil adds to the default playlist only
+}
+
+// MessageHandlerOption overrides a default message handler value
+type MessageHandlerOption func(*MessageHandler)
+
+// WithPlaylistTriggers routes tracks to playlists based on triggers in the message
+func WithPlaylistTriggers(triggers *trigger.Config) MessageHandlerOption {
+	return func(h *MessageHandler) {
+		h.triggers = triggers
+	}
 }
 
 // NewMessageHandler creates a new message handler
-func NewMessageHandler(playlistAdder PlaylistAdder, actions ChannelActions) *MessageHandler {
-	return &MessageHandler{playlistAdder: playlistAdder, actionIDs: actions}
+func NewMessageHandler(playlistAdder PlaylistAdder, actions ChannelActions, opts ...MessageHandlerOption) *MessageHandler {
+	h := &MessageHandler{playlistAdder: playlistAdder, actionIDs: actions}
+	for _, opt := range opts {
+		opt(h)
+	}
+	return h
 }
 
 // String returns a string representation of the handler
@@ -134,7 +151,7 @@ func (h *MessageHandler) Handle(s *discordgo.Session, m *discordgo.MessageCreate
 			reply := &Reply{session: s, event: m}
 			actions = append(actions, reply)
 		case ActionAddTracksToPlaylist:
-			addTracksToPlaylist := &AddTracksToPlaylist{session: s, event: m, playlistAdder: h.playlistAdder}
+			addTracksToPlaylist := &AddTracksToPlaylist{session: s, event: m, playlistAdder: h.playlistAdder, triggers: h.triggers}
 			actions = append(actions, addTracksToPlaylist)
 		default:
 			logger.With(zap.String(zapkey.Action, actionID)).Error("received unknown action", fields...)
@@ -205,6 +222,7 @@ type AddTracksToPlaylist struct {
 	session       *discordgo.Session
 	event         *discordgo.MessageCreate
 	playlistAdder PlaylistAdder
+	triggers      *trigger.Config
 }
 
 // String returns a string representation of the action
@@ -237,22 +255,59 @@ func (a *AddTracksToPlaylist) Execute(ctx context.Context) {
 	// Log if we found any tracks
 	logger.With(zap.Int(zapkey.Count, len(trackURLs))).Info("Found Spotify tracks", fields...)
 
-	// TODO: Make this more configurable to support multiple playlists
-	playlistID := os.Getenv(envvar.SpotifyPlaylistID)
-	if playlistID == "" {
-		logger.With(zap.Error(fmt.Errorf("failed to retrieve playlist ID from env var"))).Error("Playlist ID is empty", fields...)
+	playlistIDs := a.playlistIDs(ctx)
+	if len(playlistIDs) == 0 {
 		return
 	}
 
 	ctx, fields = ctxutil.WithZapFields(
 		ctx,
-		zap.String(zapkey.PlaylistID, playlistID),
+		zap.Strings(zapkey.PlaylistIDs, playlistIDs),
 	)
 
-	if err := a.playlistAdder.AddTracksToPlaylist(ctx, a.event.Author.ID, playlistID, trackURLs); err != nil {
+	if err := a.playlistAdder.AddTracksToPlaylist(ctx, a.event.Author.ID, trackURLs, playlistIDs...); err != nil {
 		logger.With(zap.Error(err)).Error("Failed to add tracks to playlist", fields...)
 		return
 	}
+}
+
+// playlistIDs returns the playlists to add the message's tracks to.
+// Unknown triggers are logged (and optionally replied to) and otherwise ignored.
+func (a *AddTracksToPlaylist) playlistIDs(ctx context.Context) []string {
+	fields := ctxutil.ZapFields(ctx)
+
+	// Without triggers configured, only the default playlist is used
+	if a.triggers == nil {
+		playlistID := os.Getenv(envvar.SpotifyPlaylistID)
+		if playlistID == "" {
+			logger.With(zap.Error(fmt.Errorf("failed to retrieve playlist ID from env var"))).Error("Playlist ID is empty", fields...)
+			return nil
+		}
+		return []string{playlistID}
+	}
+
+	playlistIDs, unknown := a.triggers.Resolve(a.event.Content)
+	if len(unknown) > 0 {
+		logger.With(zap.Strings(zapkey.Triggers, unknown)).Warn("Unknown playlist triggers", fields...)
+		if a.triggers.ReplyUnknown {
+			a.replyUnknownTriggers(ctx, unknown)
+		}
+	}
+	return playlistIDs
+}
+
+// replyUnknownTriggers replies to the message listing the unknown triggers
+func (a *AddTracksToPlaylist) replyUnknownTriggers(ctx context.Context, unknown []string) {
+	names := make([]string, len(unknown))
+	for i, name := range unknown {
+		names[i] = a.triggers.Prefix + name
+	}
+	reply := &Reply{
+		session:  a.session,
+		event:    a.event,
+		response: "Unknown playlist: " + strings.Join(names, ", "),
+	}
+	reply.Execute(ctx)
 }
 
 // Validate validates the action
