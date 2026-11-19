@@ -37,22 +37,30 @@ type Store struct {
 	config atomic.Pointer[Config]
 }
 
-// OpenStore loads the tags saved at path and applies them to base.
-// If no file exists yet, base's current tags are saved there, so a one-time
-// import from SPOTIFY_PLAYLIST_TRIGGERS carries over. imported reports whether that happened.
-func OpenStore(path string, base *Config) (store *Store, imported bool, err error) {
-	if base == nil {
-		return nil, false, fmt.Errorf("base config is nil")
+// OpenStore loads the tags saved at path, using settings for everything else
+// (settings' own tags are ignored). If no file exists yet, it's created from seed,
+// the tags in SPOTIFY_PLAYLIST_TRIGGERS. created reports whether that happened.
+func OpenStore(path string, settings *Config, seed map[string][]string) (store *Store, created bool, err error) {
+	if settings == nil {
+		return nil, false, fmt.Errorf("settings are nil")
 	}
 	s := &Store{path: path}
 
 	data, err := os.ReadFile(path)
 	switch {
 	case errors.Is(err, os.ErrNotExist):
-		if err := s.save(base.Playlists); err != nil {
+		seed, err := NormalizePlaylists(seed)
+		if err != nil {
+			return nil, false, fmt.Errorf("invalid tags to import: %w", err)
+		}
+		config, err := settings.withPlaylists(seed)
+		if err != nil {
 			return nil, false, err
 		}
-		s.config.Store(base)
+		if err := s.save(seed); err != nil {
+			return nil, false, err
+		}
+		s.config.Store(config)
 		return s, true, nil
 	case err != nil:
 		return nil, false, fmt.Errorf("failed to read %s: %w", path, err)
@@ -62,17 +70,35 @@ func OpenStore(path string, base *Config) (store *Store, imported bool, err erro
 	if err := json.Unmarshal(data, &file); err != nil {
 		return nil, false, fmt.Errorf("failed to parse %s: %w", path, err)
 	}
-	for name := range file.Tags {
-		if err := ValidateName(name); err != nil {
-			return nil, false, fmt.Errorf("invalid tag in %s: %w", path, err)
-		}
+	playlists, err := NormalizePlaylists(file.Tags)
+	if err != nil {
+		return nil, false, fmt.Errorf("invalid tags in %s: %w", path, err)
 	}
-	config, err := base.withPlaylists(file.Tags)
+	config, err := settings.withPlaylists(playlists)
 	if err != nil {
 		return nil, false, fmt.Errorf("invalid tags in %s: %w", path, err)
 	}
 	s.config.Store(config)
 	return s, false, nil
+}
+
+// NormalizePlaylists validates tag names and converts playlist links to bare IDs,
+// so stored IDs always match what /tag remove extracts. Tags without playlists are dropped.
+func NormalizePlaylists(playlists map[string][]string) (map[string][]string, error) {
+	out := make(map[string][]string, len(playlists))
+	for name, ids := range playlists {
+		if err := ValidateName(name); err != nil {
+			return nil, err
+		}
+		for _, raw := range ids {
+			id, err := ExtractPlaylistID(raw)
+			if err != nil {
+				return nil, fmt.Errorf("tag %q: %w", name, err)
+			}
+			out[name] = appendUnique(out[name], id)
+		}
+	}
+	return out, nil
 }
 
 // Config returns the current trigger configuration. It must not be modified.
@@ -175,13 +201,32 @@ func (s *Store) save(playlists map[string][]string) error {
 		tmp.Close()
 		return fmt.Errorf("failed to save tags: %w", err)
 	}
+	// Flush the data before the rename, so the rename can't reach the disk first
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return fmt.Errorf("failed to save tags: %w", err)
+	}
 	if err := tmp.Close(); err != nil {
 		return fmt.Errorf("failed to save tags: %w", err)
 	}
 	if err := os.Rename(tmp.Name(), s.path); err != nil {
 		return fmt.Errorf("failed to save tags: %w", err)
 	}
+	// Flush the rename itself
+	if err := syncDir(dir); err != nil {
+		return fmt.Errorf("failed to save tags: %w", err)
+	}
 	return nil
+}
+
+// syncDir flushes a directory's entries to disk
+func syncDir(dir string) error {
+	d, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	defer d.Close()
+	return d.Sync()
 }
 
 // withPlaylists returns a copy of c with different tags

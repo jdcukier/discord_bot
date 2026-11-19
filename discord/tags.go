@@ -5,6 +5,7 @@ import (
 	"maps"
 	"slices"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/bwmarrin/discordgo"
 	"go.uber.org/zap"
@@ -93,16 +94,19 @@ func tagCommands() []*discordgo.ApplicationCommand {
 	}
 }
 
-// registerTagCommands creates (or updates) the tag slash commands.
+// registerTagCommands creates (or updates) the tag slash commands and reports whether all succeeded.
 // Creating a command with an existing name replaces it, so other commands are left alone.
-func registerTagCommands(s *discordgo.Session, appID string) {
+func registerTagCommands(s *discordgo.Session, appID string) bool {
+	ok := true
 	for _, cmd := range tagCommands() {
 		if _, err := s.ApplicationCommandCreate(appID, "", cmd); err != nil {
 			logger.Error("Failed to register slash command", zap.String(zapkey.Command, cmd.Name), zap.Error(err))
+			ok = false
 			continue
 		}
 		logger.Info("Registered slash command", zap.String(zapkey.Command, cmd.Name))
 	}
+	return ok
 }
 
 // tagReply is the response to a tag command
@@ -175,7 +179,7 @@ func removeTag(store TagStore, rawName, rawPlaylist string) tagReply {
 // autocompleteTags suggests existing tag names that contain what the user has typed
 func autocompleteTags(c *trigger.Config, typed string) []*discordgo.ApplicationCommandOptionChoice {
 	typed = normalizeTagName(c, typed)
-	var choices []*discordgo.ApplicationCommandOptionChoice
+	choices := []*discordgo.ApplicationCommandOptionChoice{}
 	for _, name := range slices.Sorted(maps.Keys(c.Playlists)) {
 		if !strings.Contains(name, typed) {
 			continue
@@ -213,11 +217,12 @@ func playlistLink(id string) string {
 	return "<https://open.spotify.com/playlist/" + id + ">"
 }
 
-// chunkLines joins lines into messages no longer than limit, without splitting a line
+// chunkLines joins lines into messages no longer than limit (in bytes, which is never
+// fewer than Discord's character count). Lines are only split if they're too long on their own.
 func chunkLines(lines []string, limit int) []string {
 	var chunks []string
 	var b strings.Builder
-	for _, line := range lines {
+	for _, line := range splitLongLines(lines, limit) {
 		if b.Len() > 0 && b.Len()+1+len(line) > limit {
 			chunks = append(chunks, b.String())
 			b.Reset()
@@ -231,4 +236,40 @@ func chunkLines(lines []string, limit int) []string {
 		chunks = append(chunks, b.String())
 	}
 	return chunks
+}
+
+// splitLongLines splits lines longer than limit, preferring to break after a comma
+func splitLongLines(lines []string, limit int) []string {
+	var out []string
+	for _, line := range lines {
+		for len(line) > limit {
+			cut := strings.LastIndex(line[:limit], ", ")
+			if cut <= 0 {
+				cut = runeBoundary(line, limit)
+			} else {
+				cut += len(",")
+			}
+			out = append(out, line[:cut])
+			line = strings.TrimLeft(line[cut:], " ")
+		}
+		out = append(out, line)
+	}
+	return out
+}
+
+// truncate shortens s to at most limit bytes, marking the cut with an ellipsis
+func truncate(s string, limit int) string {
+	if len(s) <= limit {
+		return s
+	}
+	const ellipsis = "…"
+	return s[:runeBoundary(s, limit-len(ellipsis))] + ellipsis
+}
+
+// runeBoundary returns the largest index <= n that doesn't split a UTF-8 character
+func runeBoundary(s string, n int) int {
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+	return n
 }

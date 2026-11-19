@@ -117,6 +117,7 @@ func (c *Client) doAddTracks(
 
 	// Determine tracks that are already in the playlist to avoid duplicates
 	existingTrackIDs, err := c.allPlaylistTrackIDs(ctx, api, playlistID)
+	err = log.RedactErr(err, playlistID)
 	if err != nil {
 		logger.With(zap.Error(err)).Error("Cannot access playlist tracks", fields...)
 		return fmt.Errorf("cannot access playlist tracks %s: %w", log.RedactID(playlistID), err)
@@ -138,6 +139,7 @@ func (c *Client) doAddTracks(
 		spotify.ID(playlistID),
 		filteredTrackIDs...,
 	)
+	err = log.RedactErr(err, playlistID)
 
 	// Log detailed error information
 	if err != nil {

@@ -5,6 +5,7 @@ import (
 	"context"
 	"os"
 	"strconv"
+	"strings"
 	"unicode/utf8"
 
 	"go.uber.org/zap"
@@ -60,4 +61,31 @@ func RedactIDs(ids []string) []string {
 		out[i] = RedactID(id)
 	}
 	return out
+}
+
+// redactedError hides IDs in an error's message but keeps the original for errors.Is/As
+type redactedError struct {
+	err error
+	msg string
+}
+
+func (e *redactedError) Error() string { return e.msg }
+func (e *redactedError) Unwrap() error { return e.err }
+
+// RedactErr returns err with every occurrence of the IDs in its message shortened by RedactID.
+// Errors from HTTP clients often include the request URL, and with it the IDs in its path.
+func RedactErr(err error, ids ...string) error {
+	if err == nil {
+		return nil
+	}
+	msg := err.Error()
+	for _, id := range ids {
+		if id != "" {
+			msg = strings.ReplaceAll(msg, id, RedactID(id))
+		}
+	}
+	if msg == err.Error() {
+		return err
+	}
+	return &redactedError{err: err, msg: msg}
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync/atomic"
 
 	"github.com/bwmarrin/discordgo"
 	"go.uber.org/zap"
@@ -18,6 +19,8 @@ import (
 type InteractionSessionHandler struct {
 	appID string   // Application to register slash commands for
 	tags  TagStore // Optional; enables the tag commands
+
+	registered atomic.Bool // Whether the tag commands were registered by this process
 }
 
 // InteractionOption overrides a default interaction handler value
@@ -55,9 +58,16 @@ func (h *InteractionSessionHandler) Add(session *discordgo.Session) error {
 		if h.appID == "" {
 			return fmt.Errorf("app ID is required for the tag commands")
 		}
-		// Register on every READY so the command definitions stay in sync with the code
+		// Register once per process, so the definitions stay in sync with the code without
+		// using up Discord's daily limit on command creation when the gateway reconnects.
+		// A failed registration is retried on the next READY.
 		session.AddHandler(func(s *discordgo.Session, _ *discordgo.Ready) {
-			registerTagCommands(s, h.appID)
+			if h.registered.Load() {
+				return
+			}
+			if registerTagCommands(s, h.appID) {
+				h.registered.Store(true)
+			}
 		})
 	}
 	return nil
@@ -246,18 +256,28 @@ func (h *InteractionSessionHandler) autocomplete(s *discordgo.Session, i *discor
 	if data.Name != tagCommand || h.tags == nil || len(data.Options) == 0 {
 		return
 	}
-	var choices []*discordgo.ApplicationCommandOptionChoice
+	choices := []*discordgo.ApplicationCommandOptionChoice{}
 	for _, opt := range data.Options[0].Options {
 		if opt.Focused && opt.Name == tagOption {
 			choices = autocompleteTags(h.tags.Config(), opt.StringValue())
 		}
 	}
-	if err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-		Type: discordgo.InteractionApplicationCommandAutocompleteResult,
-		Data: &discordgo.InteractionResponseData{Choices: choices},
-	}); err != nil {
+	// Sent directly because InteractionResponseData omits an empty choices list,
+	// and Discord requires the field even when there's nothing to suggest
+	endpoint := discordgo.EndpointInteractionResponse(i.ID, i.Token)
+	body := autocompleteResponse{Type: discordgo.InteractionApplicationCommandAutocompleteResult}
+	body.Data.Choices = choices
+	if _, err := s.RequestWithBucketID("POST", endpoint, body, endpoint); err != nil {
 		logger.Error("failed to respond to autocomplete", zap.Error(err))
 	}
+}
+
+// autocompleteResponse is an autocomplete reply that always includes its choices
+type autocompleteResponse struct {
+	Type discordgo.InteractionResponseType `json:"type"`
+	Data struct {
+		Choices []*discordgo.ApplicationCommandOptionChoice `json:"choices"`
+	} `json:"data"`
 }
 
 // respond replies to a slash command without pinging anyone
@@ -269,7 +289,7 @@ func respond(s *discordgo.Session, i *discordgo.InteractionCreate, reply tagRepl
 	if err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 		Type: discordgo.InteractionResponseChannelMessageWithSource,
 		Data: &discordgo.InteractionResponseData{
-			Content:         reply.content,
+			Content:         truncate(reply.content, maxMessageLength),
 			Flags:           flags,
 			AllowedMentions: &discordgo.MessageAllowedMentions{},
 		},

@@ -44,24 +44,42 @@ type Config struct {
 
 // Load creates the trigger configuration from env vars
 func Load() (*Config, error) {
+	settings, err := LoadSettings()
+	if err != nil {
+		return nil, err
+	}
+	playlists, err := LoadSeed()
+	if err != nil {
+		return nil, err
+	}
+	return settings.withPlaylists(playlists)
+}
+
+// LoadSettings creates the trigger configuration from env vars, without any tags
+func LoadSettings() (*Config, error) {
 	prefix := os.Getenv(envvar.SpotifyTriggerPrefix)
 	if prefix == "" {
 		prefix = DefaultPrefix
 	}
 
-	playlists, err := ParsePlaylists(os.Getenv(envvar.SpotifyPlaylistTriggers))
-	if err != nil {
-		return nil, fmt.Errorf("invalid %s: %w", envvar.SpotifyPlaylistTriggers, err)
-	}
-
 	var replyUnknown bool
 	if v := os.Getenv(envvar.SpotifyReplyUnknownTriggers); v != "" {
+		var err error
 		if replyUnknown, err = strconv.ParseBool(v); err != nil {
 			return nil, fmt.Errorf("invalid %s: %w", envvar.SpotifyReplyUnknownTriggers, err)
 		}
 	}
 
-	return New(prefix, os.Getenv(envvar.SpotifyPlaylistID), playlists, replyUnknown)
+	return New(prefix, os.Getenv(envvar.SpotifyPlaylistID), nil, replyUnknown)
+}
+
+// LoadSeed parses the tags in SPOTIFY_PLAYLIST_TRIGGERS, which seed the tags file
+func LoadSeed() (map[string][]string, error) {
+	playlists, err := ParsePlaylists(os.Getenv(envvar.SpotifyPlaylistTriggers))
+	if err != nil {
+		return nil, fmt.Errorf("invalid %s: %w", envvar.SpotifyPlaylistTriggers, err)
+	}
+	return playlists, nil
 }
 
 // New creates and validates a trigger configuration

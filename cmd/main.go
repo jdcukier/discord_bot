@@ -161,14 +161,14 @@ type staticTriggers struct{ config *trigger.Config }
 func (s staticTriggers) Config() *trigger.Config { return s.config }
 
 // loadPlaylistTags loads the tags that route tracks to playlists other than the default.
-// Tags are saved in a file so they can be changed from Discord; on first run the file is
-// created from SPOTIFY_PLAYLIST_TRIGGERS. An invalid setup shouldn't take the bot down,
-// so problems are logged and the bot falls back to fewer features:
-// no tags at all (nil triggers), or tags that can't be changed (nil store).
+// Tags are saved in a file so they can be changed from Discord; the first time, the file is
+// created from SPOTIFY_PLAYLIST_TRIGGERS, which is ignored after that. An invalid setup
+// shouldn't take the bot down, so problems are logged and the bot falls back to fewer
+// features: no tags at all (nil triggers), or tags that can't be changed (nil store).
 func loadPlaylistTags() (discord.TriggerSource, discord.TagStore) {
-	base, err := trigger.Load()
+	settings, err := trigger.LoadSettings()
 	if err != nil {
-		logger.Error("Invalid playlist triggers; adding to the default playlist only", zap.Error(err))
+		logger.Error("Invalid playlist trigger settings; adding to the default playlist only", zap.Error(err))
 		return nil, nil
 	}
 
@@ -176,16 +176,41 @@ func loadPlaylistTags() (discord.TriggerSource, discord.TagStore) {
 	if path == "" {
 		path = defaultTagsFile
 	}
-	store, imported, err := trigger.OpenStore(path, base)
+	_, statErr := os.Stat(path)
+	fileExists := statErr == nil
+
+	seed, seedErr := trigger.LoadSeed()
+	if seedErr == nil {
+		seed, seedErr = trigger.NormalizePlaylists(seed)
+	}
+	if seedErr != nil {
+		if !fileExists {
+			// Don't create an empty file: it would hide the tags once the secret is fixed
+			logger.Error("Invalid playlist triggers; adding to the default playlist only", zap.Error(seedErr))
+			return nil, nil
+		}
+		logger.Warn("Ignoring invalid "+envvar.SpotifyPlaylistTriggers+" since the playlist tags file exists", zap.Error(seedErr))
+		seed = nil
+	}
+
+	store, created, err := trigger.OpenStore(path, settings, seed)
 	if err != nil {
 		logger.Error("Failed to open the playlist tags file; using "+envvar.SpotifyPlaylistTriggers+" and disabling /tag",
 			zap.String(zapkey.Path, path), zap.Error(err))
-		logTriggers(base)
-		return staticTriggers{base}, nil
+		fallback, err := trigger.New(settings.Prefix, settings.DefaultPlaylistID, seed, settings.ReplyUnknown)
+		if err != nil {
+			logger.Error("Invalid playlist triggers; adding to the default playlist only", zap.Error(err))
+			return nil, nil
+		}
+		logTriggers(fallback)
+		return staticTriggers{fallback}, nil
 	}
-	if imported {
+	switch {
+	case created && len(seed) > 0:
 		logger.Info("Created the playlist tags file from "+envvar.SpotifyPlaylistTriggers, zap.String(zapkey.Path, path))
-	} else if os.Getenv(envvar.SpotifyPlaylistTriggers) != "" {
+	case created:
+		logger.Info("Created an empty playlist tags file", zap.String(zapkey.Path, path))
+	case os.Getenv(envvar.SpotifyPlaylistTriggers) != "":
 		logger.Info("Using the playlist tags file; "+envvar.SpotifyPlaylistTriggers+" is only used to create it and can be removed",
 			zap.String(zapkey.Path, path))
 	}

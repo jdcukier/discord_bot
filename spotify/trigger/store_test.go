@@ -16,9 +16,9 @@ const (
 
 func openTestStore(t *testing.T, path string, playlists map[string][]string) (*Store, bool) {
 	t.Helper()
-	base, err := New(DefaultPrefix, "default-id", playlists, false)
+	settings, err := New(DefaultPrefix, "default-id", nil, false)
 	require.NoError(t, err)
-	store, imported, err := OpenStore(path, base)
+	store, imported, err := OpenStore(path, settings, playlists)
 	require.NoError(t, err)
 	return store, imported
 }
@@ -54,12 +54,44 @@ func TestOpenStoreInvalidFile(t *testing.T) {
 		`not json`,
 		`{"tags": {"Bad Name": ["x"]}}`,
 		`{"tags": {"default": ["x"]}}`,
+		`{"tags": {"gym": ["not-an-id"]}}`,
 	} {
 		path := filepath.Join(t.TempDir(), "tags.json")
 		require.NoError(t, os.WriteFile(path, []byte(content), 0o600))
-		_, _, err := OpenStore(path, base)
+		_, _, err := OpenStore(path, base, nil)
 		assert.Error(t, err, content)
 	}
+}
+
+func TestOpenStoreNormalizes(t *testing.T) {
+	// Imported links become bare IDs, so /tag remove can match them
+	path := filepath.Join(t.TempDir(), "tags.json")
+	store, _ := openTestStore(t, path, map[string][]string{
+		"gym":   {"https://open.spotify.com/playlist/" + gymID + "?si=abc", gymID},
+		"empty": {},
+	})
+	assert.Equal(t, map[string][]string{"gym": {gymID}}, store.Config().Playlists)
+	_, err := store.Remove("gym", gymID)
+	require.NoError(t, err)
+
+	// Same for a hand-edited file
+	path = filepath.Join(t.TempDir(), "tags.json")
+	require.NoError(t, os.WriteFile(path, []byte(`{"tags": {"Chill": ["spotify:playlist:`+chillID+`"], "none": []}}`), 0o600))
+	_, _, err = OpenStore(path, store.Config(), nil)
+	require.Error(t, err, "uppercase names are invalid in the file")
+	require.NoError(t, os.WriteFile(path, []byte(`{"tags": {"chill": ["spotify:playlist:`+chillID+`"], "none": []}}`), 0o600))
+	reopened, _, err := OpenStore(path, store.Config(), nil)
+	require.NoError(t, err)
+	assert.Equal(t, map[string][]string{"chill": {chillID}}, reopened.Config().Playlists)
+}
+
+func TestOpenStoreInvalidSeed(t *testing.T) {
+	settings, err := New(DefaultPrefix, "default-id", nil, false)
+	require.NoError(t, err)
+	path := filepath.Join(t.TempDir(), "tags.json")
+	_, _, err = OpenStore(path, settings, map[string][]string{"gym": {"https://open.spotify.com/track/" + gymID}})
+	require.Error(t, err)
+	assert.NoFileExists(t, path)
 }
 
 func TestStoreAddRemove(t *testing.T) {

@@ -19,9 +19,9 @@ const (
 
 func newTestTagStore(t *testing.T, playlists map[string][]string) *trigger.Store {
 	t.Helper()
-	base, err := trigger.New("!", defaultTestID, playlists, false)
+	settings, err := trigger.New("!", defaultTestID, nil, false)
 	require.NoError(t, err)
-	store, _, err := trigger.OpenStore(filepath.Join(t.TempDir(), "tags.json"), base)
+	store, _, err := trigger.OpenStore(filepath.Join(t.TempDir(), "tags.json"), settings, playlists)
 	require.NoError(t, err)
 	return store
 }
@@ -65,7 +65,7 @@ func TestRemoveTag(t *testing.T) {
 	store := newTestTagStore(t, map[string][]string{
 		"gym":   {gymTestID, chillTestID},
 		"chill": {chillTestID},
-		"old":   {"37i9dQZF1DXcBWIGoYBM5M"},
+		"old":   {"37i9dQZF1DXcBWIGoYBM5M"}, // Imported from the secret before editorial playlists were rejected
 	})
 
 	reply := removeTag(store, "!GYM", "https://open.spotify.com/playlist/"+chillTestID)
@@ -139,6 +139,8 @@ func TestAutocompleteTags(t *testing.T) {
 	}
 	assert.Equal(t, []string{"chill", "chill-gym", "gym"}, names(""))
 	assert.Equal(t, []string{"chill-gym", "gym"}, names("!GY"))
+	// Never nil: Discord requires the choices field
+	assert.NotNil(t, autocompleteTags(store.Config(), "zzz"))
 	assert.Empty(t, names("zzz"))
 }
 
@@ -152,4 +154,28 @@ func TestTagCommandsDefinitions(t *testing.T) {
 			}
 		}
 	}
+}
+
+func TestChunkLinesSplitsLongLines(t *testing.T) {
+	long := "`!big` → " + strings.Repeat("<https://open.spotify.com/playlist/"+gymTestID+">, ", 60)
+	long = strings.TrimSuffix(long, ", ")
+	chunks := chunkLines([]string{"header", long}, maxMessageLength)
+	require.Greater(t, len(chunks), 1)
+	for _, chunk := range chunks {
+		assert.LessOrEqual(t, len(chunk), maxMessageLength)
+	}
+	// Splits happen after a comma, so no link is broken
+	assert.Equal(t, 60, strings.Count(strings.Join(chunks, "\n"), "https://open.spotify.com/playlist/"+gymTestID+">"))
+
+	// A line without commas is split at a character boundary
+	chunks = chunkLines([]string{strings.Repeat("é", 1500)}, maxMessageLength)
+	require.Len(t, chunks, 2)
+	assert.Equal(t, strings.Repeat("é", 1500), chunks[0]+chunks[1])
+}
+
+func TestTruncate(t *testing.T) {
+	assert.Equal(t, "short", truncate("short", 10))
+	got := truncate(strings.Repeat("é", 10), 9)
+	assert.LessOrEqual(t, len(got), 9)
+	assert.Equal(t, "ééé…", got)
 }
