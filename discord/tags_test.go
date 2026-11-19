@@ -111,45 +111,147 @@ func TestRemoveTag(t *testing.T) {
 	assert.Equal(t, map[string]string{"chill": chillTestID}, store.Config().Tags)
 }
 
-func TestListTags(t *testing.T) {
-	empty := newTestTagStore(t, nil)
-	chunks := listTags(empty.Config())
-	require.Len(t, chunks, 1)
-	assert.Contains(t, chunks[0], "`+name` also adds it to the default playlist")
-	assert.Contains(t, chunks[0], "**Default playlist** <https://open.spotify.com/playlist/"+defaultTestID+">: `!default`")
-	assert.Contains(t, chunks[0], "No other tags yet")
+// testNames returns playlist names from a map, and "" for unknown playlists
+func testNames(names map[string]string) func(id string) string {
+	return func(id string) string { return names[id] }
+}
 
-	// Grouped by playlist, so aliases are listed together
+func TestListTagsEmpty(t *testing.T) {
+	store := newTestTagStore(t, nil)
+	chunks := listTags(store.Config(), nil)
+	require.Len(t, chunks, 1)
+	assert.Equal(t, strings.Join([]string{
+		"## 🎵 Playlist tags",
+		"> **How to tag**",
+		"> `<song link> !gym` — add to that playlist only",
+		"> `<song link> +gym` — add to that playlist **and** the default",
+		"> `<song link> !gym !chill` — add to several",
+		"> No tag → default playlist",
+		"",
+		"**Playlists**",
+		"🎧 **[Default playlist](<https://open.spotify.com/playlist/" + defaultTestID + ">)** — `default`",
+		"No other tags yet.",
+		"",
+		"> **Manage**",
+		"> `/tag add` — create a tag",
+		"> `/tag set` — create a tag or change its playlist",
+		"> `/tag remove` — delete a tag",
+	}, "\n"), chunks[0])
+}
+
+func TestListTags(t *testing.T) {
+	const (
+		lateTestID  = "LATE000000000000000000"
+		otherTestID = "OTHER00000000000000000"
+	)
 	store := newTestTagStore(t, map[string][]string{
-		"relaxing": {chillTestID},
-		"chill":    {chillTestID},
+		"workout":  {gymTestID},
 		"gym":      {gymTestID},
+		"lifting":  {gymTestID},
+		"sleep":    {lateTestID},
+		"chill":    {chillTestID},
+		"relaxing": {chillTestID},
 		"main":     {defaultTestID},
+		"misc":     {otherTestID},
 	})
-	chunks = listTags(store.Config())
+	names := testNames(map[string]string{
+		gymTestID:   "Gym Bangers",
+		lateTestID:  "late Night",
+		chillTestID: "Chill *vibes* [2024]",
+	})
+	chunks := listTags(store.Config(), names)
 	require.Len(t, chunks, 1)
 	lines := strings.Split(chunks[0], "\n")
-	assert.Equal(t, []string{
-		"**Default playlist** <https://open.spotify.com/playlist/" + defaultTestID + ">: `!default`, `!main`",
-		"<https://open.spotify.com/playlist/" + chillTestID + ">: `!chill`, `!relaxing`",
-		"<https://open.spotify.com/playlist/" + gymTestID + ">: `!gym`",
-	}, lines[1:])
 
-	// Long lists are split without breaking lines
+	// Real tags on two different playlists are used as examples, and the default playlist's tags aren't
+	assert.Equal(t, "> `<song link> !chill` — add to that playlist only", lines[2])
+	assert.Equal(t, "> `<song link> +chill` — add to that playlist **and** the default", lines[3])
+	assert.Equal(t, "> `<song link> !chill !gym` — add to several", lines[4])
+
+	// Playlists by name (case-insensitive) after the default one, with unknown names last
+	assert.Equal(t, []string{
+		"**Playlists**",
+		"🎧 **[Default playlist](<https://open.spotify.com/playlist/" + defaultTestID + ">)** — `default`, `main`",
+		"🎧 **[Chill \\*vibes\\* \\[2024\\]](<https://open.spotify.com/playlist/" + chillTestID + ">)** — `chill`, `relaxing`",
+		"🎧 **[Gym Bangers](<https://open.spotify.com/playlist/" + gymTestID + ">)** — `gym`, `lifting`, `workout`",
+		"🎧 **[late Night](<https://open.spotify.com/playlist/" + lateTestID + ">)** — `sleep`",
+		"🎧 **[Untitled playlist](<https://open.spotify.com/playlist/" + otherTestID + ">)** — `misc`",
+		"",
+		"> **Manage**",
+	}, lines[7:15])
+
+	// The default playlist's name is shown when it's known
+	chunks = listTags(store.Config(), testNames(map[string]string{defaultTestID: "Everything"}))
+	assert.Contains(t, chunks[0], "🎧 **[Everything](<https://open.spotify.com/playlist/"+defaultTestID+">)** — `default`, `main`")
+}
+
+func TestListTagsSortsUnknownNamesByID(t *testing.T) {
+	// The tag on chillTestID sorts first, but gymTestID ("0…") sorts before chillTestID ("A…")
+	store := newTestTagStore(t, map[string][]string{"b": {gymTestID}, "a": {chillTestID}, "c": {defaultTestID}})
+	chunks := listTags(store.Config(), testNames(nil))
+	require.Len(t, chunks, 1)
+	assert.Less(t, strings.Index(chunks[0], gymTestID), strings.Index(chunks[0], chillTestID))
+	// Ties are broken by ID too
+	chunks = listTags(store.Config(), func(string) string { return "Same" })
+	assert.Less(t, strings.Index(chunks[0], gymTestID), strings.Index(chunks[0], chillTestID))
+}
+
+func TestExampleTagNames(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		tags          map[string][]string
+		first, second string
+	}{
+		{"no tags", nil, "gym", "chill"},
+		{"one tag", map[string][]string{"run": {gymTestID}}, "run", "gym"},
+		{"one tag named like a fallback", map[string][]string{"gym": {gymTestID}}, "gym", "chill"},
+		{"aliases only", map[string][]string{"chill": {chillTestID}, "relax": {chillTestID}}, "chill", "gym"},
+		{"default playlist only", map[string][]string{"main": {defaultTestID}}, "gym", "chill"},
+		{"two playlists", map[string][]string{"b": {gymTestID}, "a": {gymTestID}, "c": {chillTestID}}, "a", "c"},
+	} {
+		first, second := exampleTagNames(newTestTagStore(t, tc.tags).Config())
+		assert.Equal(t, tc.first, first, tc.name)
+		assert.Equal(t, tc.second, second, tc.name)
+	}
+}
+
+func TestEscapeMarkdown(t *testing.T) {
+	assert.Equal(t, "Plain name", escapeMarkdown("Plain name"))
+	assert.Equal(t, `\[a\]\*b\*\_c\_\`+"`d\\`"+`\~e\~\|f\|\>g\\h`, escapeMarkdown("[a]*b*_c_`d`~e~|f|>g\\h"))
+	assert.Equal(t, "one two three", escapeMarkdown("one\ntwo\r\nthree"))
+}
+
+func TestListTagsSplitsLongLists(t *testing.T) {
 	many := map[string][]string{}
 	ids := []string{gymTestID, chillTestID}
 	for i, c := range "abcdefghijklmnopqrstuvwxyz0123456789" {
 		many["a-very-long-tag-name-for-testing-"+string(c)] = []string{ids[i%2]}
 	}
+	names := map[string]string{}
 	for i := range 40 {
 		id := fmt.Sprintf("%022d", i)
 		many[fmt.Sprintf("tag%d", i)] = []string{id}
+		names[id] = fmt.Sprintf("Playlist number %02d with a fairly long name", i)
 	}
-	chunks = listTags(newTestTagStore(t, many).Config())
-	assert.Greater(t, len(chunks), 1)
-	for _, chunk := range chunks {
+	chunks := listTags(newTestTagStore(t, many).Config(), testNames(names))
+	require.Greater(t, len(chunks), 1)
+	for i, chunk := range chunks {
 		assert.LessOrEqual(t, len(chunk), maxMessageLength)
+		assert.False(t, strings.HasPrefix(chunk, "\n"), "chunk %d starts with a blank line", i)
+		// "How to tag" is only in the first message, and "Manage" only in the last
+		assert.Equal(t, i == 0, strings.Contains(chunk, "**How to tag**"), i)
+		assert.Equal(t, i == len(chunks)-1, strings.Contains(chunk, "**Manage**"), i)
+		assert.Equal(t, i == 0, strings.Contains(chunk, "**Playlists**"), i)
 	}
+	// The quoted blocks aren't split
+	assert.Contains(t, chunks[0], "> **How to tag**\n> `<song link> !a-very-long-tag-name-for-testing-0`")
+	assert.Contains(t, chunks[0], "> No tag → default playlist")
+	assert.True(t, strings.HasSuffix(chunks[len(chunks)-1], "> **Manage**\n> `/tag add` — create a tag\n"+
+		"> `/tag set` — create a tag or change its playlist\n> `/tag remove` — delete a tag"))
+	// Every playlist is listed once, sorted by name
+	all := strings.Join(chunks, "\n")
+	assert.Equal(t, 43, strings.Count(all, "🎧 "))
+	assert.Less(t, strings.Index(all, "Playlist number 00"), strings.Index(all, "Playlist number 39"))
 }
 
 func TestAutocompleteTags(t *testing.T) {

@@ -32,7 +32,7 @@ Tags are managed in Discord with slash commands, and changes apply immediately:
 
 | Command | What it does |
 | --- | --- |
-| `/tags` | Lists the playlists and the tags for each one. Only you see the reply. |
+| `/tags` | Shows how to tag a song, then lists each playlist (linked, by name) with its tags, starting with the default playlist. Only you see the reply. |
 | `/tag add tag:relax playlist:<link>` | Creates `!relax` (and `+relax`) for the playlist. If the tag already exists, nothing changes. |
 | `/tag set tag:relax playlist:<link>` | Changes which playlist `!relax` adds to, creating the tag if it doesn't exist. |
 | `/tag remove tag:relax` | Deletes the tag. Songs tagged with it go to the default playlist. |

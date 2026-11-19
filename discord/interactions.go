@@ -203,7 +203,11 @@ func (h *InteractionSessionHandler) challengeCommand(s *discordgo.Session, i *di
 
 // tagsCommand handles /tags, splitting long lists over several messages
 func (h *InteractionSessionHandler) tagsCommand(s *discordgo.Session, i *discordgo.InteractionCreate) {
-	chunks := listTags(h.tags.Config())
+	var name func(id string) string // Names are left out if the store doesn't know them
+	if names, ok := h.tags.(PlaylistNamer); ok {
+		name = names.PlaylistName
+	}
+	chunks := listTags(h.tags.Config(), name)
 	respond(s, i, tagReply{content: chunks[0], private: true})
 	for _, chunk := range chunks[1:] {
 		if _, err := s.FollowupMessageCreate(i.Interaction, false, &discordgo.WebhookParams{

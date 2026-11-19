@@ -1,6 +1,7 @@
 package discord
 
 import (
+	"cmp"
 	"fmt"
 	"maps"
 	"slices"
@@ -126,38 +127,131 @@ type tagReply struct {
 	private bool // Only shown to the user who ran the command
 }
 
-// listTags formats the tags, grouped by playlist, as messages of at most maxMessageLength characters
-func listTags(c *trigger.Config) []string {
-	// Group the tags by playlist, with the default playlist first
+// PlaylistNamer looks up playlist names. It returns "" for playlists whose name isn't known.
+type PlaylistNamer interface {
+	PlaylistName(id string) string
+}
+
+// Labels for playlists whose name isn't known
+const (
+	untitledPlaylistLabel = "Untitled playlist"
+	defaultPlaylistLabel  = "Default playlist"
+)
+
+// exampleTags are used in the /tags examples when there aren't enough real tags
+var exampleTags = []string{"gym", "chill"}
+
+// listTags formats the playlists with their tags as messages of at most maxMessageLength characters.
+// name returns a playlist's name, or "" if it isn't known.
+func listTags(c *trigger.Config, name func(id string) string) []string {
+	// Group the tags by playlist. The default playlist always has its reserved tag.
 	byPlaylist := map[string][]string{c.DefaultPlaylistID: {trigger.DefaultName}}
-	for _, name := range slices.Sorted(maps.Keys(c.Tags)) {
-		id := c.Tags[name]
-		byPlaylist[id] = append(byPlaylist[id], name)
+	for tag, id := range c.Tags {
+		byPlaylist[id] = append(byPlaylist[id], tag)
 	}
-	others := slices.DeleteFunc(slices.Collect(maps.Keys(byPlaylist)), func(id string) bool { return id == c.DefaultPlaylistID })
-	slices.SortFunc(others, func(a, b string) int { return strings.Compare(byPlaylist[a][0], byPlaylist[b][0]) })
-
-	formatTags := func(names []string) string {
-		tags := make([]string, len(names))
-		for i, name := range names {
-			tags[i] = "`" + c.Prefix + name + "`"
+	names := map[string]string{}
+	for id, tags := range byPlaylist {
+		slices.Sort(tags)
+		if name != nil {
+			names[id] = strings.TrimSpace(name(id))
 		}
-		return strings.Join(tags, ", ")
 	}
 
-	lines := []string{
-		fmt.Sprintf("**Playlist tags**: put one after a song link. `%sname` adds the song to that playlist only, "+
-			"`%sname` also adds it to the default playlist. Without a tag, songs go to the default playlist.",
-			c.Prefix, trigger.PlusPrefix),
-		fmt.Sprintf("**Default playlist** %s: %s", playlistLink(c.DefaultPlaylistID), formatTags(byPlaylist[c.DefaultPlaylistID])),
+	// The default playlist comes first, then the others by name. Unknown names go last, by ID.
+	others := slices.DeleteFunc(slices.Collect(maps.Keys(byPlaylist)), func(id string) bool { return id == c.DefaultPlaylistID })
+	slices.SortFunc(others, func(a, b string) int {
+		na, nb := names[a], names[b]
+		if (na == "") != (nb == "") {
+			if na == "" {
+				return 1
+			}
+			return -1
+		}
+		return cmp.Or(
+			strings.Compare(strings.ToLower(na), strings.ToLower(nb)),
+			strings.Compare(na, nb),
+			strings.Compare(a, b),
+		)
+	})
+
+	playlistLine := func(id string) string {
+		label := names[id]
+		if label == "" {
+			label = untitledPlaylistLabel
+			if id == c.DefaultPlaylistID {
+				label = defaultPlaylistLabel
+			}
+		}
+		tags := make([]string, len(byPlaylist[id]))
+		for i, tag := range byPlaylist[id] {
+			tags[i] = "`" + tag + "`"
+		}
+		return fmt.Sprintf("🎧 **[%s](<%s>)** — %s", escapeMarkdown(label), playlistURL(id), strings.Join(tags, ", "))
 	}
+
+	first, second := exampleTagNames(c)
+	howTo := strings.Join([]string{
+		"## 🎵 Playlist tags",
+		"> **How to tag**",
+		fmt.Sprintf("> `<song link> %s%s` — add to that playlist only", c.Prefix, first),
+		fmt.Sprintf("> `<song link> %s%s` — add to that playlist **and** the default", trigger.PlusPrefix, first),
+		fmt.Sprintf("> `<song link> %s%s %s%s` — add to several", c.Prefix, first, c.Prefix, second),
+		"> No tag → default playlist",
+	}, "\n")
+
+	// Each block stays in one message unless it's too long on its own.
+	// A leading newline leaves a blank line between sections.
+	blocks := []string{howTo, "\n**Playlists**\n" + playlistLine(c.DefaultPlaylistID)}
 	for _, id := range others {
-		lines = append(lines, fmt.Sprintf("%s: %s", playlistLink(id), formatTags(byPlaylist[id])))
+		blocks = append(blocks, playlistLine(id))
 	}
 	if len(c.Tags) == 0 {
-		lines = append(lines, "No other tags yet. Create one with `/tag add`.")
+		blocks = append(blocks, "No other tags yet.")
 	}
-	return chunkLines(lines, maxMessageLength)
+	blocks = append(blocks, strings.Join([]string{
+		"\n> **Manage**",
+		"> `/tag add` — create a tag",
+		"> `/tag set` — create a tag or change its playlist",
+		"> `/tag remove` — delete a tag",
+	}, "\n"))
+	return chunkLines(blocks, maxMessageLength)
+}
+
+// exampleTagNames picks two tags for the /tags examples: real tags on two different playlists
+// other than the default one where possible, otherwise from exampleTags
+func exampleTagNames(c *trigger.Config) (first, second string) {
+	for _, tag := range slices.Sorted(maps.Keys(c.Tags)) {
+		id := c.Tags[tag]
+		switch {
+		case id == c.DefaultPlaylistID:
+		case first == "":
+			first = tag
+		case id != c.Tags[first]:
+			return first, tag
+		}
+	}
+	for _, tag := range exampleTags {
+		if _, exists := c.Tags[tag]; exists || tag == first {
+			continue
+		}
+		if first == "" {
+			first = tag
+		} else if second == "" {
+			second = tag
+		}
+	}
+	return first, second
+}
+
+// markdownEscaper escapes the characters that would break a masked link or format its text
+var markdownEscaper = strings.NewReplacer(
+	`\`, `\\`, "[", `\[`, "]", `\]`, "*", `\*`, "_", `\_`, "`", "\\`", "~", `\~`, "|", `\|`, ">", `\>`,
+	"\r\n", " ", "\n", " ", "\r", " ",
+)
+
+// escapeMarkdown escapes s so Discord shows it as plain text on one line, e.g. as a link's text
+func escapeMarkdown(s string) string {
+	return markdownEscaper.Replace(s)
 }
 
 // addTag handles /tag add, which only creates new tags so nobody replaces one by accident
@@ -255,11 +349,18 @@ func playlistName(c *trigger.Config, id string) string {
 
 // playlistLink formats a playlist link without an embed preview
 func playlistLink(id string) string {
-	return "<https://open.spotify.com/playlist/" + id + ">"
+	return "<" + playlistURL(id) + ">"
+}
+
+// playlistURL is a playlist's Spotify link
+func playlistURL(id string) string {
+	return "https://open.spotify.com/playlist/" + id
 }
 
 // chunkLines joins lines into messages no longer than limit (in bytes, which is never
 // fewer than Discord's character count). Lines are only split if they're too long on their own.
+// A "line" may contain newlines, to keep a block in one message. Leading newlines are dropped
+// at the start of a message.
 func chunkLines(lines []string, limit int) []string {
 	var chunks []string
 	var b strings.Builder
@@ -270,6 +371,8 @@ func chunkLines(lines []string, limit int) []string {
 		}
 		if b.Len() > 0 {
 			b.WriteByte('\n')
+		} else {
+			line = strings.TrimLeft(line, "\n")
 		}
 		b.WriteString(line)
 	}
