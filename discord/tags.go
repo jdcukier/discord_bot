@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strings"
 	"unicode"
+	"unicode/utf16"
 	"unicode/utf8"
 
 	"github.com/bwmarrin/discordgo"
@@ -151,15 +152,17 @@ func registerTagCommands(s *discordgo.Session, appID string) bool {
 
 // tagReply is the response to a tag command
 type tagReply struct {
-	content string
-	private bool // Only shown to the user who ran the command
+	content string // Shows the playlist's saved name, if any
+	private bool   // Only shown to the user who ran the command
 
-	playlistID string // Playlist the command's tag adds to, if it succeeded, so its name can be looked up
+	// For public replies that show a playlist: the playlist, and the reply again with its name
+	// (or "" if it isn't known), so a name that isn't saved yet can be looked up before replying
+	playlistID string
+	withName   func(name string) string
 }
 
-// PlaylistNamer looks up playlist names. It returns "" for playlists whose name isn't known.
-// /tags calls it once per playlist before replying, and Discord drops interactions that aren't
-// answered within 3 seconds, so PlaylistName must only read cached names and must not call Spotify.
+// PlaylistNamer gives the saved playlist names. It returns "" for playlists whose name isn't known.
+// It must only read saved names and must not call Spotify; see PlaylistNames for lookups.
 type PlaylistNamer interface {
 	PlaylistName(id string) string
 }
@@ -216,33 +219,36 @@ func listTags(c *trigger.Config, name func(id string) string) []string {
 
 	line := func(id string) string { return playlistLine(c, id, names[id], byPlaylist[id], nil) }
 
-	first, second := exampleTagNames(c)
-	howTo := strings.Join([]string{
-		"## 🎵 Playlist tags",
-		"> **How to tag**",
-		fmt.Sprintf("> `<song link> %s%s` — add to that playlist only", c.Prefix, first),
-		fmt.Sprintf("> `<song link> %s%s` — add to that playlist **and** the default", trigger.PlusPrefix, first),
-		fmt.Sprintf("> `<song link> %s%s %s%s` — add to several", c.Prefix, first, c.Prefix, second),
-		"> No tag → default playlist",
-	}, "\n")
-
-	// Each block stays in one message unless it's too long on its own.
+	// Each block stays in one message unless it's too long on its own, so the heading starts the
+	// first message with the playlists, and the help ends the last one.
 	// A leading newline leaves a blank line between sections.
-	blocks := []string{howTo, "\n**Playlists**\n" + line(c.DefaultPlaylistID)}
+	blocks := []string{"## 🎵 Playlist tags\n**Playlists**\n" + line(c.DefaultPlaylistID)}
 	for _, id := range others {
 		blocks = append(blocks, line(id))
 	}
 	if len(c.Tags) == 0 {
 		blocks = append(blocks, "No other tags yet.")
 	}
+	first, second := exampleTagNames(c)
 	blocks = append(blocks, strings.Join([]string{
-		"\n> **Manage**",
-		"> `/tag add` — create a tag",
-		"> `/tag set` — create a tag or change its playlist",
-		"> `/tag remove` — delete a tag",
-		"> `/tag alias` — add more tags to a tag's playlist",
+		"\n**Manage**",
+		"`/tag add` — create a tag",
+		"`/tag set` — create a tag or change its playlist",
+		"`/tag remove` — delete a tag",
+		"`/tag alias` — add more tags to a tag's playlist",
+		"",
+		"**How to tag**",
+		fmt.Sprintf("`<song link> %s%s` — add to that playlist only", c.Prefix, first),
+		fmt.Sprintf("`<song link> %s%s` — add to that playlist **and** the default", trigger.PlusPrefix, first),
+		fmt.Sprintf("`<song link> %s%s %s%s` — add to several", c.Prefix, first, c.Prefix, second),
+		"No tag → default playlist",
 	}, "\n"))
 	return chunkLines(blocks, maxMessageLength)
+}
+
+// listedPlaylists returns the playlists /tags lists: the default one and every tagged one
+func listedPlaylists(c *trigger.Config) []string {
+	return slices.Sorted(maps.Keys(tagsByPlaylist(c)))
 }
 
 // tagsByPlaylist groups the tags by playlist, each sorted. The default playlist always has its reserved tag.
@@ -559,7 +565,7 @@ func changeTag(store TagStore, rawName, rawPlaylist string, replace bool) tagRep
 		return tagReply{content: failure + err.Error(), private: true}
 	}
 	if previous == playlistID {
-		return tagReply{content: fmt.Sprintf("`%s%s` already adds to that playlist.", c.Prefix, name), private: true, playlistID: playlistID}
+		return tagReply{content: fmt.Sprintf("`%s%s` already adds to that playlist.", c.Prefix, name), private: true}
 	}
 	if previous != "" && !replace {
 		return tagReply{content: fmt.Sprintf("`%s%s` already adds to %s. Use `/tag set` to change its playlist.",
@@ -581,8 +587,15 @@ func changeTag(store TagStore, rawName, rawPlaylist string, replace bool) tagRep
 	if playlistID != c.DefaultPlaylistID && !slices.Contains(slices.Collect(maps.Values(c.Tags)), playlistID) {
 		subtext = append(subtext, "Playlist must be collaborative")
 	}
-	content := tagChangeReply(store.Config(), header, playlistID, names(playlistID), []string{name}, subtext...)
-	return tagReply{content: content, playlistID: playlistID}
+	after := store.Config()
+	return namedTagReply(playlistID, names(playlistID), func(playlistName string) string {
+		return tagChangeReply(after, header, playlistID, playlistName, []string{name}, subtext...)
+	})
+}
+
+// namedTagReply is a public reply showing a playlist, formatted with its saved name, or "" if it isn't known
+func namedTagReply(playlistID, savedName string, withName func(name string) string) tagReply {
+	return tagReply{content: withName(savedName), playlistID: playlistID, withName: withName}
 }
 
 // removeTag handles /tag remove
@@ -639,8 +652,9 @@ func aliasTag(store TagStore, rawExisting, rawNames string) tagReply {
 		return tagReply{content: content, private: true}
 	}
 	header := fmt.Sprintf("✅ **Added aliases for `%s%s`**", c.Prefix, existing)
-	content := tagChangeReply(c, header, result.PlaylistID, nameOf(result.PlaylistID), result.Added, skipped...)
-	return tagReply{content: content, playlistID: result.PlaylistID}
+	return namedTagReply(result.PlaylistID, nameOf(result.PlaylistID), func(name string) string {
+		return tagChangeReply(c, header, result.PlaylistID, name, result.Added, skipped...)
+	})
 }
 
 // skippedAliases explains why /tag alias left names out, with one part per reason.
@@ -685,14 +699,22 @@ func skippedAliases(c *trigger.Config, skipped []trigger.SkippedAlias, name func
 }
 
 // skippedAliasName formats a name /tag alias left out as code. Invalid names are shown as typed,
-// so backticks, which would end the code span, are dropped, and names too long to be tags are cut.
+// so backticks, which would end the code span, are dropped, and names too long to be tags are cut
+// to MaxNameLength, counted like Discord does (see trigger.NameLength), without splitting a character.
 func skippedAliasName(name string) string {
 	name = strings.ReplaceAll(name, "`", "")
 	if name == "" {
 		return "(blank)"
 	}
-	if runes := []rune(name); len(runes) > trigger.MaxNameLength {
-		name = string(runes[:trigger.MaxNameLength]) + "…"
+	if trigger.NameLength(name) > trigger.MaxNameLength {
+		units, cut := 0, 0
+		for i, r := range name {
+			if units += utf16.RuneLen(r); units > trigger.MaxNameLength {
+				cut = i
+				break
+			}
+		}
+		name = name[:cut] + "…"
 	}
 	return "`" + name + "`"
 }
@@ -716,9 +738,11 @@ func autocompleteTags(c *trigger.Config, typed string, withDefault bool) []*disc
 	slices.Sort(names)
 	choices := []*discordgo.ApplicationCommandOptionChoice{}
 	for _, name := range names {
-		// Discord rejects choices over 100 characters. Tag names are shorter, but this keeps
-		// one bad tag from breaking autocomplete for everyone.
-		if !strings.Contains(name, typed) || trigger.NameLength(c.Prefix+name) > maxChoiceLength {
+		// Tags saved before the length limit can't be submitted, since the tag option is limited to
+		// MaxNameLength, and Discord rejects choices over 100 characters, so one bad tag could break
+		// autocomplete for everyone
+		if !strings.Contains(name, typed) || trigger.NameLength(name) > trigger.MaxNameLength ||
+			trigger.NameLength(c.Prefix+name) > maxChoiceLength {
 			continue
 		}
 		choices = append(choices, &discordgo.ApplicationCommandOptionChoice{Name: c.Prefix + name, Value: name})

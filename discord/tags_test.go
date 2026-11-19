@@ -282,7 +282,7 @@ func TestAliasTagNameLength(t *testing.T) {
 	reply = aliasTag(store, "gym", wide+" "+invalid)
 	assert.True(t, reply.private)
 	assert.Equal(t, "No tags added to `!gym`'s playlist:\n"+
-		"- Skipped `"+wide+"` (longer than 50 characters)\n"+
+		"- Skipped `"+strings.Repeat("\U0001D41A", 25)+"…` (longer than 50 characters)\n"+
 		"- Skipped `"+invalid[:trigger.MaxNameLength]+"…` (invalid name)", reply.content)
 }
 
@@ -440,21 +440,21 @@ func TestListTagsEmpty(t *testing.T) {
 	require.Len(t, chunks, 1)
 	assert.Equal(t, strings.Join([]string{
 		"## 🎵 Playlist tags",
-		"> **How to tag**",
-		"> `<song link> !gym` — add to that playlist only",
-		"> `<song link> +gym` — add to that playlist **and** the default",
-		"> `<song link> !gym !chill` — add to several",
-		"> No tag → default playlist",
-		"",
 		"**Playlists**",
 		"🎧 **[Default playlist](<https://open.spotify.com/playlist/" + defaultTestID + ">)** — `default`",
 		"No other tags yet.",
 		"",
-		"> **Manage**",
-		"> `/tag add` — create a tag",
-		"> `/tag set` — create a tag or change its playlist",
-		"> `/tag remove` — delete a tag",
-		"> `/tag alias` — add more tags to a tag's playlist",
+		"**Manage**",
+		"`/tag add` — create a tag",
+		"`/tag set` — create a tag or change its playlist",
+		"`/tag remove` — delete a tag",
+		"`/tag alias` — add more tags to a tag's playlist",
+		"",
+		"**How to tag**",
+		"`<song link> !gym` — add to that playlist only",
+		"`<song link> +gym` — add to that playlist **and** the default",
+		"`<song link> !gym !chill` — add to several",
+		"No tag → default playlist",
 	}, "\n"), chunks[0])
 }
 
@@ -480,15 +480,11 @@ func TestListTags(t *testing.T) {
 	})
 	chunks := listTags(store.Config(), names)
 	require.Len(t, chunks, 1)
-	lines := strings.Split(chunks[0], "\n")
 
-	// Real tags on two different playlists are used as examples, and the default playlist's tags aren't
-	assert.Equal(t, "> `<song link> !chill` — add to that playlist only", lines[2])
-	assert.Equal(t, "> `<song link> +chill` — add to that playlist **and** the default", lines[3])
-	assert.Equal(t, "> `<song link> !chill !gym` — add to several", lines[4])
-
-	// Playlists by name (case-insensitive) after the default one, with unknown names last
-	assert.Equal(t, []string{
+	// Playlists by name (case-insensitive) after the default one, with unknown names last.
+	// Real tags on two different playlists are used as examples, and the default playlist's tags aren't.
+	assert.Equal(t, strings.Join([]string{
+		"## 🎵 Playlist tags",
 		"**Playlists**",
 		"🎧 **[Default playlist](<https://open.spotify.com/playlist/" + defaultTestID + ">)** — `default`, `main`",
 		"🎧 **[Chill \\*vibes\\* \\[2024\\]](<https://open.spotify.com/playlist/" + chillTestID + ">)** — `chill`, `relaxing`",
@@ -496,8 +492,18 @@ func TestListTags(t *testing.T) {
 		"🎧 **[late Night](<https://open.spotify.com/playlist/" + lateTestID + ">)** — `sleep`",
 		"🎧 **[Untitled playlist](<https://open.spotify.com/playlist/" + otherTestID + ">)** — `misc`",
 		"",
-		"> **Manage**",
-	}, lines[7:15])
+		"**Manage**",
+		"`/tag add` — create a tag",
+		"`/tag set` — create a tag or change its playlist",
+		"`/tag remove` — delete a tag",
+		"`/tag alias` — add more tags to a tag's playlist",
+		"",
+		"**How to tag**",
+		"`<song link> !chill` — add to that playlist only",
+		"`<song link> +chill` — add to that playlist **and** the default",
+		"`<song link> !chill !gym` — add to several",
+		"No tag → default playlist",
+	}, "\n"), chunks[0])
 
 	// The default playlist's name is shown when it's known
 	chunks = listTags(store.Config(), testNames(map[string]string{defaultTestID: "Everything"}))
@@ -649,17 +655,21 @@ func TestListTagsSplitsLongLists(t *testing.T) {
 	for i, chunk := range chunks {
 		assert.LessOrEqual(t, len(chunk), maxMessageLength)
 		assert.False(t, strings.HasPrefix(chunk, "\n"), "chunk %d starts with a blank line", i)
-		// "How to tag" is only in the first message, and "Manage" only in the last
-		assert.Equal(t, i == 0, strings.Contains(chunk, "**How to tag**"), i)
-		assert.Equal(t, i == len(chunks)-1, strings.Contains(chunk, "**Manage**"), i)
+		// The heading and "Playlists" start the first message, and "Manage" and "How to tag" end the last
+		assert.Equal(t, i == 0, strings.HasPrefix(chunk, "## 🎵 Playlist tags\n**Playlists**\n🎧 **[Default playlist]"), i)
 		assert.Equal(t, i == 0, strings.Contains(chunk, "**Playlists**"), i)
+		assert.Equal(t, i == len(chunks)-1, strings.Contains(chunk, "**Manage**"), i)
+		assert.Equal(t, i == len(chunks)-1, strings.Contains(chunk, "**How to tag**"), i)
+		assert.NotContains(t, chunk, "\n>", i)
 	}
-	// The quoted blocks aren't split
-	assert.Contains(t, chunks[0], "> **How to tag**\n> `<song link> !a-very-long-tag-name-for-testing-0`")
-	assert.Contains(t, chunks[0], "> No tag → default playlist")
-	assert.True(t, strings.HasSuffix(chunks[len(chunks)-1], "> **Manage**\n> `/tag add` — create a tag\n"+
-		"> `/tag set` — create a tag or change its playlist\n> `/tag remove` — delete a tag\n"+
-		"> `/tag alias` — add more tags to a tag's playlist"))
+	// The help isn't split
+	assert.True(t, strings.HasSuffix(chunks[len(chunks)-1], "**Manage**\n`/tag add` — create a tag\n"+
+		"`/tag set` — create a tag or change its playlist\n`/tag remove` — delete a tag\n"+
+		"`/tag alias` — add more tags to a tag's playlist\n\n"+
+		"**How to tag**\n`<song link> !a-very-long-tag-name-for-testing-0` — add to that playlist only\n"+
+		"`<song link> +a-very-long-tag-name-for-testing-0` — add to that playlist **and** the default\n"+
+		"`<song link> !a-very-long-tag-name-for-testing-0 !a-very-long-tag-name-for-testing-1` — add to several\n"+
+		"No tag → default playlist"))
 	// Every playlist is listed once, sorted by name
 	all := strings.Join(chunks, "\n")
 	assert.Equal(t, 43, strings.Count(all, "🎧 "))
@@ -696,11 +706,39 @@ func TestAutocompleteTags(t *testing.T) {
 	assert.Equal(t, "default", choices[0].Value)
 
 	// Names too long for a choice are left out, so one can't break autocomplete
-	tooLong := strings.Repeat("a", maxChoiceLength)
-	c := &trigger.Config{Prefix: "!", Tags: map[string]string{tooLong: gymTestID, tooLong[1:]: gymTestID}}
+	// (with a long prefix, since the tags themselves are limited to 50 characters below)
+	prefix := strings.Repeat("!", maxChoiceLength-trigger.MaxNameLength+1)
+	tooLong := strings.Repeat("a", trigger.MaxNameLength)
+	c := &trigger.Config{Prefix: prefix, Tags: map[string]string{tooLong: gymTestID, tooLong[1:]: gymTestID}}
 	choices = autocompleteTags(c, "", false)
 	require.Len(t, choices, 1)
-	assert.Equal(t, "!"+tooLong[1:], choices[0].Name)
+	assert.Equal(t, prefix+tooLong[1:], choices[0].Name)
+
+	// So are tags too long to submit, saved before the limit, counted like Discord does
+	c = &trigger.Config{Prefix: "!", Tags: map[string]string{
+		strings.Repeat("a", trigger.MaxNameLength):   gymTestID,
+		strings.Repeat("b", trigger.MaxNameLength+1): gymTestID,
+		strings.Repeat("\U0001D41A", 25):             gymTestID,
+		strings.Repeat("\U0001D41A", 26):             gymTestID,
+	}}
+	var values []string
+	for _, choice := range autocompleteTags(c, "", false) {
+		values = append(values, choice.Value.(string))
+	}
+	assert.Equal(t, []string{strings.Repeat("a", trigger.MaxNameLength), strings.Repeat("\U0001D41A", 25)}, values)
+}
+
+func TestSkippedAliasName(t *testing.T) {
+	assert.Equal(t, "`gym`", skippedAliasName("g`ym"))
+	assert.Equal(t, "(blank)", skippedAliasName("``"))
+	fits := strings.Repeat("a", trigger.MaxNameLength)
+	assert.Equal(t, "`"+fits+"`", skippedAliasName(fits))
+	assert.Equal(t, "`"+fits+"…`", skippedAliasName(fits+"b"))
+	// Cut by UTF-16 code units, like Discord counts, on a character boundary
+	wide := "\U0001D41A"
+	assert.Equal(t, "`"+strings.Repeat(wide, 25)+"`", skippedAliasName(strings.Repeat(wide, 25)))
+	assert.Equal(t, "`"+strings.Repeat(wide, 25)+"…`", skippedAliasName(strings.Repeat(wide, 26)))
+	assert.Equal(t, "`a"+strings.Repeat(wide, 24)+"…`", skippedAliasName("a"+strings.Repeat(wide, 25)))
 }
 
 func TestTagCommandsDefinitions(t *testing.T) {
