@@ -125,7 +125,7 @@ func TestAddTagNameLookupFails(t *testing.T) {
 	// The tag is added, and the reply asks for the playlist's name to be looked up afterwards
 	reply := addTag(store, "gym", gymTestID)
 	assert.False(t, reply.private)
-	assert.Contains(t, reply.content, "now adds songs to")
+	assert.Contains(t, reply.content, "✅ **Added `!gym`**")
 	assert.Equal(t, gymTestID, reply.playlistID)
 
 	// The lookup fails without changing the tag

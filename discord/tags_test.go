@@ -28,32 +28,56 @@ func newTestTagStore(t *testing.T, playlists map[string][]string) *trigger.Store
 	return store
 }
 
+// testPlaylistTarget is a playlist's link target as tag replies show it
+func testPlaylistTarget(id string) string {
+	return "(<https://open.spotify.com/playlist/" + id + ">)"
+}
+
 func TestSetTag(t *testing.T) {
 	store := newTestTagStore(t, nil)
 
+	// A new tag gets the /tag add reply. Its playlist's name isn't known yet.
 	reply := setTag(store, " !Gym ", "https://open.spotify.com/playlist/"+gymTestID+"?si=x")
 	assert.False(t, reply.private)
-	assert.Contains(t, reply.content, "`!gym` now adds songs to <https://open.spotify.com/playlist/"+gymTestID+">, and `+gym` adds them to the default playlist too.")
-	assert.Contains(t, reply.content, "collaborative")
-	assert.NotContains(t, reply.content, "used to")
+	assert.Equal(t, "✅ **Added `!gym`**\n"+
+		"🎧 **[Untitled playlist]"+testPlaylistTarget(gymTestID)+"** — **`gym`**\n"+
+		"-# `+gym` also adds to the default · Playlist must be collaborative", reply.content)
+	assert.Equal(t, gymTestID, reply.playlistID)
 
-	// Replacing the playlist
+	// Moving a tag shows where it was, with the old playlist's name escaped
+	require.NoError(t, store.SetPlaylistName(gymTestID, "Gym *Bangers*"))
 	reply = setTag(store, "+gym", chillTestID)
 	assert.False(t, reply.private)
-	assert.Contains(t, reply.content, "It used to add to <https://open.spotify.com/playlist/"+gymTestID+">.")
+	assert.Equal(t, "🔁 **Moved `!gym`**\n"+
+		"🎧 **[Untitled playlist]"+testPlaylistTarget(chillTestID)+"** — **`gym`**\n"+
+		"-# Was: [Gym \\*Bangers\\*]"+testPlaylistTarget(gymTestID)+" · `+gym` also adds to the default · Playlist must be collaborative",
+		reply.content)
+	assert.Equal(t, chillTestID, reply.playlistID)
+	// The old playlist has no tags left, so its name is forgotten
+	assert.Empty(t, store.PlaylistName(gymTestID))
 
 	// A playlist another tag already uses doesn't need the reminder
+	require.NoError(t, store.SetPlaylistName(chillTestID, "Chill [2024]"))
 	reply = setTag(store, "workout", chillTestID)
-	assert.NotContains(t, reply.content, "collaborative")
+	assert.Equal(t, "✅ **Added `!workout`**\n"+
+		"🎧 **[Chill \\[2024\\]]"+testPlaylistTarget(chillTestID)+"** — `gym`, **`workout`**\n"+
+		"-# `+workout` also adds to the default", reply.content)
+
+	// The default playlist uses its /tags label, lists its reserved tag, and needs no subtext
 	reply = setTag(store, "main", defaultTestID)
-	assert.Contains(t, reply.content, "now adds songs to the default playlist")
-	assert.NotContains(t, reply.content, "collaborative")
+	assert.Equal(t, "✅ **Added `!main`**\n"+
+		"🎧 **[Default playlist]"+testPlaylistTarget(defaultTestID)+"** — `default`, **`main`**", reply.content)
+	require.NoError(t, store.SetPlaylistName(defaultTestID, "Everything"))
+	reply = setTag(store, "gym", defaultTestID)
+	assert.Equal(t, "🔁 **Moved `!gym`**\n"+
+		"🎧 **[Everything]"+testPlaylistTarget(defaultTestID)+"** — `default`, **`gym`**, `main`\n"+
+		"-# Was: [Chill \\[2024\\]]"+testPlaylistTarget(chillTestID), reply.content)
 
-	reply = setTag(store, "gym", chillTestID)
+	reply = setTag(store, "gym", defaultTestID)
 	assert.True(t, reply.private)
-	assert.Contains(t, reply.content, "already")
+	assert.Equal(t, "`!gym` already adds to that playlist.", reply.content)
 
-	assert.Equal(t, map[string]string{"gym": chillTestID, "workout": chillTestID, "main": defaultTestID}, store.Config().Tags)
+	assert.Equal(t, map[string]string{"gym": defaultTestID, "workout": chillTestID, "main": defaultTestID}, store.Config().Tags)
 }
 
 func TestAddTag(t *testing.T) {
@@ -61,8 +85,10 @@ func TestAddTag(t *testing.T) {
 
 	reply := addTag(store, "!Gym", "https://open.spotify.com/playlist/"+gymTestID)
 	assert.False(t, reply.private)
-	assert.Contains(t, reply.content, "`!gym` now adds songs to <https://open.spotify.com/playlist/"+gymTestID+">, and `+gym` adds them to the default playlist too.")
-	assert.Contains(t, reply.content, "collaborative")
+	assert.Equal(t, "✅ **Added `!gym`**\n"+
+		"🎧 **[Untitled playlist]"+testPlaylistTarget(gymTestID)+"** — **`gym`**\n"+
+		"-# `+gym` also adds to the default · Playlist must be collaborative", reply.content)
+	assert.Equal(t, gymTestID, reply.playlistID)
 
 	// Existing tags aren't replaced
 	reply = addTag(store, "gym", chillTestID)
@@ -73,15 +99,37 @@ func TestAddTag(t *testing.T) {
 	assert.True(t, reply.private)
 	assert.Contains(t, reply.content, "already adds to that playlist")
 
-	// Aliases share a playlist
-	reply = addTag(store, "workout", gymTestID)
+	// Aliases share a playlist, so it's already collaborative. Tags are sorted, with the new one in bold.
+	require.NoError(t, store.SetPlaylistName(gymTestID, "Gym Bangers"))
+	reply = addTag(store, "fitness", gymTestID)
 	assert.False(t, reply.private)
-	assert.NotContains(t, reply.content, "collaborative")
+	assert.Equal(t, "✅ **Added `!fitness`**\n"+
+		"🎧 **[Gym Bangers]"+testPlaylistTarget(gymTestID)+"** — **`fitness`**, `gym`\n"+
+		"-# `+fitness` also adds to the default", reply.content)
 
 	reply = addTag(store, "default", gymTestID)
 	assert.True(t, strings.HasPrefix(reply.content, "Couldn't add the tag: "))
 
-	assert.Equal(t, map[string]string{"gym": gymTestID, "workout": gymTestID}, store.Config().Tags)
+	assert.Equal(t, map[string]string{"gym": gymTestID, "fitness": gymTestID}, store.Config().Tags)
+}
+
+func TestTagRepliesCustomPrefixWithoutNames(t *testing.T) {
+	settings, err := trigger.New("?", defaultTestID, nil, false)
+	require.NoError(t, err)
+	store, _, err := trigger.OpenStore(filepath.Join(t.TempDir(), "tags.yaml"), settings,
+		map[string][]string{"gym": {gymTestID}})
+	require.NoError(t, err)
+	require.NoError(t, store.SetPlaylistName(gymTestID, "Gym Bangers"))
+
+	// A store that doesn't know names falls back to the /tags labels
+	reply := addTag(namelessTagStore{store}, "?lifting", gymTestID)
+	assert.Equal(t, "✅ **Added `?lifting`**\n"+
+		"🎧 **[Untitled playlist]"+testPlaylistTarget(gymTestID)+"** — `gym`, **`lifting`**\n"+
+		"-# `+lifting` also adds to the default", reply.content)
+	reply = removeTag(namelessTagStore{store}, "lifting")
+	assert.Equal(t, "🗑️ **Deleted `?lifting`**\n"+
+		"🎧 **[Untitled playlist]"+testPlaylistTarget(gymTestID)+"** — `gym`\n"+
+		"-# Songs tagged `?lifting` now go to the default playlist", reply.content)
 }
 
 func TestSetTagErrors(t *testing.T) {
@@ -100,16 +148,60 @@ func TestSetTagErrors(t *testing.T) {
 }
 
 func TestRemoveTag(t *testing.T) {
-	store := newTestTagStore(t, map[string][]string{"gym": {gymTestID}, "chill": {chillTestID}})
+	store := newTestTagStore(t, map[string][]string{
+		"gym": {gymTestID}, "workout": {gymTestID}, "chill": {chillTestID}, "main": {defaultTestID},
+	})
+	require.NoError(t, store.SetPlaylistName(gymTestID, "Gym_Bangers"))
 
 	reply := removeTag(store, "+GYM")
 	assert.False(t, reply.private)
-	assert.Contains(t, reply.content, "Deleted `!gym`")
+	assert.Equal(t, "🗑️ **Deleted `!gym`**\n"+
+		"🎧 **[Gym\\_Bangers]"+testPlaylistTarget(gymTestID)+"** — `workout`\n"+
+		"-# Songs tagged `!gym` now go to the default playlist", reply.content)
+	assert.Empty(t, reply.playlistID)
+
+	// The playlist's name is shown even though removing its last tag forgets it
+	reply = removeTag(store, "workout")
+	assert.Equal(t, "🗑️ **Deleted `!workout`**\n"+
+		"🎧 **[Gym\\_Bangers]"+testPlaylistTarget(gymTestID)+"** — no tags left\n"+
+		"-# Songs tagged `!workout` now go to the default playlist", reply.content)
+	assert.Empty(t, store.PlaylistName(gymTestID))
+
+	reply = removeTag(store, "chill")
+	assert.Equal(t, "🗑️ **Deleted `!chill`**\n"+
+		"🎧 **[Untitled playlist]"+testPlaylistTarget(chillTestID)+"** — no tags left\n"+
+		"-# Songs tagged `!chill` now go to the default playlist", reply.content)
+
+	// The default playlist always keeps its reserved tag
+	reply = removeTag(store, "main")
+	assert.Equal(t, "🗑️ **Deleted `!main`**\n"+
+		"🎧 **[Default playlist]"+testPlaylistTarget(defaultTestID)+"** — `default`\n"+
+		"-# Songs tagged `!main` now go to the default playlist", reply.content)
 
 	reply = removeTag(store, "gym")
 	assert.True(t, reply.private)
 	assert.True(t, strings.HasPrefix(reply.content, "Couldn't remove the tag: "))
-	assert.Equal(t, map[string]string{"chill": chillTestID}, store.Config().Tags)
+	assert.Empty(t, store.Config().Tags)
+}
+
+func TestTagChangeReplyFitsInAMessage(t *testing.T) {
+	many := map[string][]string{}
+	for i := range 80 {
+		many[fmt.Sprintf("a-rather-long-tag-name-number-%02d", i)] = []string{gymTestID}
+	}
+	store := newTestTagStore(t, many)
+	reply := addTag(store, "zzz", gymTestID)
+	assert.LessOrEqual(t, len(reply.content), maxMessageLength)
+	lines := strings.Split(reply.content, "\n")
+	require.Len(t, lines, 3)
+	assert.Equal(t, "✅ **Added `!zzz`**", lines[0])
+	// The last tags are left out whole, keeping the header and subtext
+	assert.True(t, strings.HasPrefix(lines[1], "🎧 **[Untitled playlist]"+testPlaylistTarget(gymTestID)+"** — `a-rather-long-tag-name-number-00`, "))
+	assert.True(t, strings.HasSuffix(lines[1], "`, …"), lines[1])
+	assert.Equal(t, "-# `+zzz` also adds to the default", lines[2])
+
+	// Without room for a single tag, the line is cut
+	assert.Equal(t, "🎧 **[A]…", fitPlaylistLine("🎧 **[A](<https://open.spotify.com/playlist/x>)** — `a`, `b`", 13))
 }
 
 // testNames returns playlist names from a map, and "" for unknown playlists
