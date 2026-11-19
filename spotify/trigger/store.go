@@ -43,9 +43,19 @@ const Header = `# ╔═══════════════════�
 # ╚══════════════════════════════════════╝
 `
 
-// storeFile is the on-disk format of the store: playlists, each with the tags that add to it
+// storeFile is the on-disk format of the store: playlists, each with the tags that add to it,
+// and the default playlist's name, which is kept even if no tag adds to it
 type storeFile struct {
+	Default   *storeDefault   `yaml:"default_playlist,omitempty"`
 	Playlists []storePlaylist `yaml:"playlists"`
+}
+
+// storeDefault is the default playlist in the tags file, written once its name is known.
+// It's only there for the name: the default playlist is set with SPOTIFY_PLAYLIST_ID, and the
+// name is ignored if the ID doesn't match it. Tags that add to it are listed under playlists.
+type storeDefault struct {
+	Name string `yaml:"name"`
+	ID   string `yaml:"id"`
 }
 
 // storePlaylist is a playlist in the tags file
@@ -71,7 +81,7 @@ type Store struct {
 	path   string
 	mu     sync.Mutex // Serializes writes
 	config atomic.Pointer[Config]
-	names  atomic.Pointer[map[string]string] // Tagged playlists' IDs to their names on Spotify
+	names  atomic.Pointer[map[string]string] // Tagged and default playlists' IDs to their names on Spotify
 
 	legacy    string // JSON file the tags were converted from, moved aside on the next successful save
 	backup    string // Where legacy was moved
@@ -237,6 +247,7 @@ func (s *Store) convert(settings *Config, legacyPath string, replace bool) (*Sto
 
 // parseStoreFile reads the YAML tags file into tag names to playlist IDs, and playlist IDs to names.
 // Each playlist must be listed once with at least one tag, and each tag must be under one playlist.
+// The default playlist's name may also be given on its own, for when no tag adds to it.
 // Errors only show the start of playlist IDs, since they're logged.
 func parseStoreFile(data []byte) (tags, names map[string]string, err error) {
 	var file storeFile
@@ -272,6 +283,15 @@ func parseStoreFile(data []byte) (tags, names map[string]string, err error) {
 			tags[name] = id
 		}
 	}
+	if file.Default != nil {
+		id, err := ExtractPlaylistID(file.Default.ID)
+		if err != nil {
+			return nil, nil, fmt.Errorf("default_playlist: %q isn't a valid Spotify playlist ID or link", log.RedactID(file.Default.ID))
+		}
+		if names[id] == "" {
+			names[id] = file.Default.Name
+		}
+	}
 	maps.DeleteFunc(names, func(_, name string) bool { return name == "" })
 	return tags, names, nil
 }
@@ -302,7 +322,7 @@ func (s *Store) init(settings *Config, tags, names map[string]string) error {
 	if err != nil {
 		return err
 	}
-	names = taggedNames(names, tags)
+	names = keptNames(names, tags, config.DefaultPlaylistID)
 	s.config.Store(config)
 	s.names.Store(&names)
 	return nil
@@ -349,13 +369,14 @@ func (s *Store) Config() *Config {
 	return s.config.Load()
 }
 
-// PlaylistName returns the saved name of a tagged playlist, or "" if it's unknown
+// PlaylistName returns the saved name of a tagged playlist or the default playlist, or "" if it's unknown
 func (s *Store) PlaylistName(id string) string {
 	return (*s.names.Load())[id]
 }
 
-// SetPlaylistName saves the name of a tagged playlist, as shown on Spotify.
-// Names are only kept for playlists with tags, so other playlists are ignored, as are empty names.
+// SetPlaylistName saves the name of a tagged playlist or the default playlist, as shown on Spotify.
+// Names are only kept for playlists with tags and the default playlist, so other playlists are
+// ignored, as are empty names.
 func (s *Store) SetPlaylistName(id, name string) error {
 	if name == "" {
 		return nil
@@ -366,7 +387,7 @@ func (s *Store) SetPlaylistName(id, name string) error {
 
 	current := s.Config()
 	names := *s.names.Load()
-	if names[id] == name || !slices.Contains(slices.Collect(maps.Values(current.Tags)), id) {
+	if names[id] == name || (id != current.DefaultPlaylistID && !slices.Contains(slices.Collect(maps.Values(current.Tags)), id)) {
 		return nil
 	}
 	names = maps.Clone(names)
@@ -506,13 +527,13 @@ func (s *Store) Remove(name string) (previous string, err error) {
 }
 
 // update saves the new tags and makes them current, forgetting the names of playlists
-// left without tags. The caller must hold s.mu.
+// left without tags, other than the default one. The caller must hold s.mu.
 func (s *Store) update(current *Config, tags map[string]string) error {
 	config, err := current.withTags(tags)
 	if err != nil {
 		return err
 	}
-	names := taggedNames(*s.names.Load(), tags)
+	names := keptNames(*s.names.Load(), tags, config.DefaultPlaylistID)
 	if err := s.save(tags, names); err != nil {
 		return err
 	}
@@ -521,10 +542,10 @@ func (s *Store) update(current *Config, tags map[string]string) error {
 	return nil
 }
 
-// taggedNames returns the names of the playlists that have tags
-func taggedNames(names, tags map[string]string) map[string]string {
+// keptNames returns the names of the playlists that have tags, and of the default playlist
+func keptNames(names, tags map[string]string, defaultPlaylistID string) map[string]string {
 	out := make(map[string]string)
-	for _, id := range tags {
+	for _, id := range append(slices.Collect(maps.Values(tags)), defaultPlaylistID) {
 		if name := names[id]; name != "" {
 			out[id] = name
 		}
@@ -532,15 +553,19 @@ func taggedNames(names, tags map[string]string) map[string]string {
 	return out
 }
 
-// encode formats the tags as YAML, grouped by playlist. The output is deterministic so diffs stay clean:
-// playlists are sorted by name, then ID, and each playlist's tags are sorted.
-func encode(tags, names map[string]string) ([]byte, error) {
+// encode formats the tags as YAML, grouped by playlist, after the default playlist's name if it's known.
+// The output is deterministic so diffs stay clean: playlists are sorted by name, then ID, and each
+// playlist's tags are sorted.
+func encode(defaultPlaylistID string, tags, names map[string]string) ([]byte, error) {
 	byPlaylist := make(map[string][]string)
 	for _, name := range slices.Sorted(maps.Keys(tags)) {
 		id := tags[name]
 		byPlaylist[id] = append(byPlaylist[id], name)
 	}
 	file := storeFile{Playlists: []storePlaylist{}}
+	if name := names[defaultPlaylistID]; name != "" {
+		file.Default = &storeDefault{Name: name, ID: defaultPlaylistID}
+	}
 	for id, tagNames := range byPlaylist {
 		file.Playlists = append(file.Playlists, storePlaylist{Name: names[id], ID: id, Tags: tagNames})
 	}
@@ -576,7 +601,7 @@ func (s *Store) save(tags, names map[string]string) error {
 
 // write writes the tags to disk atomically, so a crash never leaves a half-written file
 func (s *Store) write(tags, names map[string]string) error {
-	data, err := encode(tags, names)
+	data, err := encode(s.Config().DefaultPlaylistID, tags, names)
 	if err != nil {
 		return fmt.Errorf("failed to encode tags: %w", err)
 	}

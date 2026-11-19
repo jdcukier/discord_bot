@@ -453,7 +453,7 @@ func TestStorePlaylistNames(t *testing.T) {
 	require.NoError(t, store.SetPlaylistName(gymID, ""))
 	assert.Equal(t, "Gym", store.PlaylistName(gymID))
 
-	// Only tagged playlists have names
+	// Only tagged playlists and the default one have names
 	require.NoError(t, store.SetPlaylistName(chillID, "Chill"))
 	assert.Empty(t, store.PlaylistName(chillID))
 	assert.NotContains(t, readFile(t, path), "Chill")
@@ -471,6 +471,49 @@ func TestStorePlaylistNames(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, store.PlaylistName(gymID))
 	assert.NotContains(t, readFile(t, path), "name:")
+}
+
+func TestStoreDefaultPlaylistName(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "tags.yaml")
+	store, _ := openTestStore(t, path, map[string][]string{"gym": {gymID}})
+
+	// The default playlist's name is kept even though no tag adds to it
+	require.NoError(t, store.SetPlaylistName(defaultID, "Everything"))
+	assert.Equal(t, "Everything", store.PlaylistName(defaultID))
+	want := Header + `default_playlist:
+  name: Everything
+  id: ` + defaultID + `
+playlists:
+  - id: ` + gymID + `
+    tags:
+      - gym
+`
+	assert.Equal(t, want, readFile(t, path))
+	reopened, _ := openTestStore(t, path, nil)
+	assert.Equal(t, "Everything", reopened.PlaylistName(defaultID))
+
+	// Tags on the default playlist show its name too, and removing them keeps it
+	_, err := store.Set("main", defaultID)
+	require.NoError(t, err)
+	assert.Contains(t, readFile(t, path), "  - name: Everything\n    id: "+defaultID+"\n    tags:\n      - main\n")
+	_, err = store.Remove("main")
+	require.NoError(t, err)
+	assert.Equal(t, want, readFile(t, path))
+
+	// The name is ignored once SPOTIFY_PLAYLIST_ID points elsewhere
+	settings, err := New(DefaultPrefix, chillID, nil, false)
+	require.NoError(t, err)
+	moved, _, err := OpenStore(path, settings, nil)
+	require.NoError(t, err)
+	assert.Empty(t, moved.PlaylistName(defaultID))
+	assert.Empty(t, moved.PlaylistName(chillID))
+
+	// A hand-edited default playlist needs a valid ID, which isn't shown in full in the error
+	require.NoError(t, os.WriteFile(path, []byte("default_playlist:\n  name: X\n  id: "+gymID+"x\nplaylists: []\n"), 0o600))
+	_, _, err = OpenStore(path, testSettings(t), nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "default_playlist")
+	assert.NotContains(t, err.Error(), gymID)
 }
 
 func TestStoreSetRemove(t *testing.T) {

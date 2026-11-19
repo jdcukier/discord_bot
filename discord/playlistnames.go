@@ -15,8 +15,15 @@ import (
 )
 
 const (
-	// playlistNameTimeout limits how long a name lookup may take
+	// playlistNameTimeout limits how long a name lookup may take in the background
 	playlistNameTimeout = 10 * time.Second
+
+	// playlistNameLookupTimeout limits how long a reply waits for missing names. It's short,
+	// since the user is waiting, and names are cosmetic: replies fall back to generic labels.
+	playlistNameLookupTimeout = 3 * time.Second
+
+	// maxPlaylistNameLookups is how many names Names looks up at once
+	maxPlaylistNameLookups = 4
 
 	// playlistNameRefreshInterval is how often adding a song refreshes its playlist's name
 	playlistNameRefreshInterval = time.Hour
@@ -28,16 +35,18 @@ type PlaylistNameFetcher interface {
 	FetchPlaylistName(ctx context.Context, userID, playlistID string) (string, error)
 }
 
-// PlaylistNameStore saves the names of tagged playlists
+// PlaylistNameStore saves the names of tagged playlists and the default playlist
 type PlaylistNameStore interface {
 	Config() *trigger.Config
+	PlaylistName(id string) string
 	SetPlaylistName(id, name string) error
 }
 
-// PlaylistNames keeps the saved names of tagged playlists up to date. Spotify access is per user,
-// so names are looked up with the access of whoever tags a playlist or adds a song to it.
-// Names are cosmetic: lookups never prompt anyone to connect Spotify, and failures keep the old name.
-// A nil *PlaylistNames does nothing.
+// PlaylistNames looks up and saves the names of tagged playlists and the default playlist.
+// Spotify access is per user, so names are looked up with the access of whoever runs a tag command
+// or adds a song. Names are cosmetic: lookups never prompt anyone to connect Spotify, and failures
+// keep the saved name. Everything that shows a playlist's name gets it through Name or Names.
+// A nil *PlaylistNames only returns saved names, without looking anything up.
 type PlaylistNames struct {
 	fetcher PlaylistNameFetcher
 	store   PlaylistNameStore
@@ -60,26 +69,72 @@ func NewPlaylistNames(fetcher PlaylistNameFetcher, store PlaylistNameStore) *Pla
 	}
 }
 
-// Refresh looks up a tagged playlist's name and saves it
-func (p *PlaylistNames) Refresh(ctx context.Context, userID, playlistID string) {
-	if p == nil {
-		return
+// Saved returns the playlist's saved name, or "" if it isn't known, without looking it up
+func (p *PlaylistNames) Saved(playlistID string) string {
+	if p == nil || playlistID == "" {
+		return ""
 	}
-	p.mu.Lock()
-	p.refreshed[playlistID] = time.Now()
-	p.mu.Unlock()
-	p.refresh(ctx, userID, playlistID)
+	return p.store.PlaylistName(playlistID)
 }
 
-// RefreshStale refreshes the names of the tagged playlists among playlistIDs that weren't looked up
-// in the last playlistNameRefreshInterval, so renames on Spotify show up without a lookup per song
+// Name returns the playlist's saved name. If none is saved, it looks the name up with userID's
+// Spotify access, within playlistNameLookupTimeout, and saves it if no name was saved meanwhile.
+// It returns "" if the name is still unknown, e.g. if the user hasn't connected Spotify.
+func (p *PlaylistNames) Name(ctx context.Context, userID, playlistID string) string {
+	return p.Names(ctx, userID, []string{playlistID})[playlistID]
+}
+
+// Names is Name for several playlists, looking up the missing names in parallel (at most
+// maxPlaylistNameLookups at once). Unknown names are left out of the result.
+func (p *PlaylistNames) Names(ctx context.Context, userID string, playlistIDs []string) map[string]string {
+	names := make(map[string]string, len(playlistIDs))
+	var missing []string
+	for _, id := range playlistIDs {
+		if name := p.Saved(id); name != "" {
+			names[id] = name
+		} else if id != "" && !slices.Contains(missing, id) {
+			missing = append(missing, id)
+		}
+	}
+	if p == nil || len(missing) == 0 {
+		return names
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, playlistNameLookupTimeout)
+	defer cancel()
+	var (
+		wg      sync.WaitGroup
+		mu      sync.Mutex
+		limiter = make(chan struct{}, maxPlaylistNameLookups)
+	)
+	for _, id := range missing {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			limiter <- struct{}{}
+			defer func() { <-limiter }()
+			if name := p.lookup(ctx, userID, id, false); name != "" {
+				mu.Lock()
+				names[id] = name
+				mu.Unlock()
+			}
+		}()
+	}
+	wg.Wait()
+	return names
+}
+
+// RefreshStale refreshes the names of the tagged playlists and the default playlist among playlistIDs
+// that weren't looked up in the last playlistNameRefreshInterval, replacing the saved names, so renames
+// on Spotify show up without a lookup per song
 func (p *PlaylistNames) RefreshStale(ctx context.Context, userID string, playlistIDs []string) {
 	if p == nil {
 		return
 	}
-	tagged := slices.Collect(maps.Values(p.store.Config().Tags))
+	c := p.store.Config()
+	tagged := slices.Collect(maps.Values(c.Tags))
 	for _, id := range playlistIDs {
-		if !slices.Contains(tagged, id) {
+		if id != c.DefaultPlaylistID && !slices.Contains(tagged, id) {
 			continue
 		}
 		p.mu.Lock()
@@ -89,34 +144,42 @@ func (p *PlaylistNames) RefreshStale(ctx context.Context, userID string, playlis
 		}
 		p.mu.Unlock()
 		if stale {
-			p.refresh(ctx, userID, id)
+			func() {
+				ctx, cancel := context.WithTimeout(ctx, playlistNameTimeout)
+				defer cancel()
+				p.lookup(ctx, userID, id, true)
+			}()
 		}
 	}
 }
 
-// refresh looks up a playlist's name and saves it, keeping the saved name on errors.
+// lookup looks up a playlist's name and saves it: always if replace is true, and otherwise only
+// if no name is saved. It returns the name, or "" on errors, keeping the saved name.
 // If lookups of the same playlist overlap, only the last one to start is saved, so a stale name can't win.
-func (p *PlaylistNames) refresh(ctx context.Context, userID, playlistID string) {
+func (p *PlaylistNames) lookup(ctx context.Context, userID, playlistID string, replace bool) string {
 	p.mu.Lock()
 	p.lookups[playlistID]++
 	lookup := p.lookups[playlistID]
+	p.refreshed[playlistID] = time.Now()
 	p.mu.Unlock()
 
 	fields := []zap.Field{zap.String(zapkey.PlaylistID, log.RedactID(playlistID)), zap.String(zapkey.UserID, userID)}
-	ctx, cancel := context.WithTimeout(ctx, playlistNameTimeout)
-	defer cancel()
 	name, err := p.fetcher.FetchPlaylistName(ctx, userID, playlistID)
 	if err != nil {
 		logger.Info("Couldn't look up the playlist name; keeping the saved one", append(fields, zap.Error(err))...)
-		return
+		return ""
 	}
 
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.lookups[playlistID] != lookup {
-		return // A newer lookup started meanwhile
+		return name // A newer lookup started meanwhile, and saves its own result
+	}
+	if !replace && p.store.PlaylistName(playlistID) != "" {
+		return name
 	}
 	if err := p.store.SetPlaylistName(playlistID, name); err != nil {
 		logger.Warn("Failed to save the playlist name", append(fields, zap.Error(err))...)
 	}
+	return name
 }

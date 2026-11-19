@@ -3,6 +3,7 @@ package discord
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 	"sync/atomic"
 
@@ -19,7 +20,7 @@ import (
 type InteractionSessionHandler struct {
 	appID string         // Application to register slash commands for
 	tags  TagStore       // Optional; enables the tag commands
-	names *PlaylistNames // Optional; saves the names of playlists tagged with /tag
+	names *PlaylistNames // Optional; looks up the playlist names the tag commands show
 
 	registered atomic.Bool // Whether the tag commands were registered by this process
 }
@@ -35,8 +36,8 @@ func WithTagCommands(appID string, tags TagStore) InteractionOption {
 	}
 }
 
-// WithTagPlaylistNames looks up and saves a playlist's name when /tag add or /tag set points a tag to it,
-// with the Spotify access of the user who ran the command
+// WithTagPlaylistNames looks up and saves the names /tags and the /tag replies show, if they aren't
+// saved yet, with the Spotify access of the user who ran the command
 func WithTagPlaylistNames(names *PlaylistNames) InteractionOption {
 	return func(h *InteractionSessionHandler) {
 		h.names = names
@@ -210,10 +211,35 @@ func (h *InteractionSessionHandler) challengeCommand(s *discordgo.Session, i *di
 	}
 }
 
-// tagsCommand handles /tags, splitting long lists over several messages
-func (h *InteractionSessionHandler) tagsCommand(s *discordgo.Session, i *discordgo.InteractionCreate) {
-	chunks := listTags(h.tags.Config(), playlistNames(h.tags))
-	respond(s, i, tagReply{content: chunks[0], private: true})
+// tagsCommand handles /tags, splitting long lists over several messages. Missing playlist names are
+// looked up with the Spotify access of the user who ran it, after deferring the reply, since Discord
+// drops interactions that aren't answered within 3 seconds.
+func (h *InteractionSessionHandler) tagsCommand(s interactionResponder, i *discordgo.InteractionCreate) {
+	c := h.tags.Config()
+	ids := listedPlaylists(c)
+	name := cachedPlaylistNames(h.tags)
+	deferred := false
+	if h.names != nil && slices.ContainsFunc(ids, func(id string) bool { return h.names.Saved(id) == "" }) {
+		if !deferResponse(s, i, true) {
+			return
+		}
+		deferred = true
+		names := h.names.Names(context.Background(), interactionUserID(i), ids)
+		name = func(id string) string { return names[id] }
+	}
+	sendTagList(s, i, listTags(c, name), deferred)
+}
+
+// sendTagList sends the /tags messages privately: the first as the reply (or as the deferred reply's
+// content), and the others as follow-ups
+func sendTagList(s interactionResponder, i *discordgo.InteractionCreate, chunks []string, deferred bool) {
+	if deferred {
+		if !editResponse(s, i, chunks[0]) {
+			return
+		}
+	} else {
+		respond(s, i, tagReply{content: chunks[0], private: true})
+	}
 	for _, chunk := range chunks[1:] {
 		if _, err := s.FollowupMessageCreate(i.Interaction, false, &discordgo.WebhookParams{
 			Content:         chunk,
@@ -227,7 +253,7 @@ func (h *InteractionSessionHandler) tagsCommand(s *discordgo.Session, i *discord
 }
 
 // tagCommand handles /tag add, /tag set, /tag remove and /tag alias
-func (h *InteractionSessionHandler) tagCommand(s *discordgo.Session, i *discordgo.InteractionCreate) {
+func (h *InteractionSessionHandler) tagCommand(s interactionResponder, i *discordgo.InteractionCreate) {
 	data := i.ApplicationCommandData()
 	if len(data.Options) == 0 {
 		return
@@ -244,6 +270,7 @@ func (h *InteractionSessionHandler) tagCommand(s *discordgo.Session, i *discordg
 		newTags = opt.StringValue()
 	}
 
+	// Tag changes are only saved to disk, so this is quick enough to do before replying
 	var reply tagReply
 	switch sub.Name {
 	case tagAddSubcommand:
@@ -263,11 +290,27 @@ func (h *InteractionSessionHandler) tagCommand(s *discordgo.Session, i *discordg
 		zap.String(zapkey.Name, name),
 		zap.String(zapkey.UserID, interactionUserID(i)),
 		zap.Bool(zapkey.Result, !reply.private)) // Replies contain playlist IDs, so don't log them
-	respond(s, i, reply)
-	if reply.playlistID != "" && h.names != nil {
-		// After replying, since Discord only waits 3 seconds for a reply and the name is cosmetic
-		go h.names.Refresh(context.Background(), interactionUserID(i), reply.playlistID)
+	h.sendTagReply(s, i, reply)
+}
+
+// sendTagReply sends a tag command's reply. Private replies (errors and "already" replies) and
+// replies whose playlist name is saved are sent right away. Otherwise the public reply is deferred,
+// the playlist's name is looked up with the Spotify access of the user who ran the command, and the
+// reply is filled in with it, or with the fallback label if the name is still unknown.
+func (h *InteractionSessionHandler) sendTagReply(s interactionResponder, i *discordgo.InteractionCreate, reply tagReply) {
+	if reply.private || reply.withName == nil || h.names == nil {
+		respond(s, i, reply)
+		return
 	}
+	if name := h.names.Saved(reply.playlistID); name != "" {
+		reply.content = reply.withName(name)
+		respond(s, i, reply)
+		return
+	}
+	if !deferResponse(s, i, false) {
+		return
+	}
+	editResponse(s, i, reply.withName(h.names.Name(context.Background(), interactionUserID(i), reply.playlistID)))
 }
 
 // autocomplete suggests options while a slash command is being typed
@@ -300,8 +343,46 @@ type autocompleteResponse struct {
 	} `json:"data"`
 }
 
+// interactionResponder replies to interactions; *discordgo.Session implements it
+type interactionResponder interface {
+	InteractionRespond(interaction *discordgo.Interaction, resp *discordgo.InteractionResponse, options ...discordgo.RequestOption) error
+	InteractionResponseEdit(interaction *discordgo.Interaction, newresp *discordgo.WebhookEdit, options ...discordgo.RequestOption) (*discordgo.Message, error)
+	FollowupMessageCreate(interaction *discordgo.Interaction, wait bool, data *discordgo.WebhookParams, options ...discordgo.RequestOption) (*discordgo.Message, error)
+}
+
+// deferResponse acknowledges a slash command so its reply can take longer than Discord's 3 seconds,
+// showing that the bot is thinking. Whether the reply is private is set here and can't be changed
+// later. It reports whether it succeeded.
+func deferResponse(s interactionResponder, i *discordgo.InteractionCreate, private bool) bool {
+	var flags discordgo.MessageFlags
+	if private {
+		flags = discordgo.MessageFlagsEphemeral
+	}
+	if err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+		Type: discordgo.InteractionResponseDeferredChannelMessageWithSource,
+		Data: &discordgo.InteractionResponseData{Flags: flags},
+	}); err != nil {
+		logger.Error("failed to defer slash command response", zap.Error(err))
+		return false
+	}
+	return true
+}
+
+// editResponse fills in a deferred reply without pinging anyone, and reports whether it succeeded
+func editResponse(s interactionResponder, i *discordgo.InteractionCreate, content string) bool {
+	content = truncate(content, maxMessageLength)
+	if _, err := s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
+		Content:         &content,
+		AllowedMentions: &discordgo.MessageAllowedMentions{},
+	}); err != nil {
+		logger.Error("failed to send deferred slash command response", zap.Error(err))
+		return false
+	}
+	return true
+}
+
 // respond replies to a slash command without pinging anyone
-func respond(s *discordgo.Session, i *discordgo.InteractionCreate, reply tagReply) {
+func respond(s interactionResponder, i *discordgo.InteractionCreate, reply tagReply) {
 	var flags discordgo.MessageFlags
 	if reply.private {
 		flags = discordgo.MessageFlagsEphemeral
