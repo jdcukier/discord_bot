@@ -412,6 +412,80 @@ func (s *Store) set(name, playlistID string, replace bool) (previous string, err
 	return previous, s.update(current, tags)
 }
 
+// AliasSkip is why AddAliases left a name out
+type AliasSkip int
+
+const (
+	AliasExists   AliasSkip = iota + 1 // The tag already adds to the playlist
+	AliasTaken                         // The tag adds to another playlist, which AddAliases never changes
+	AliasInvalid                       // The name isn't a valid tag name
+	AliasReserved                      // The name is DefaultName
+)
+
+// SkippedAlias is a name AddAliases left out
+type SkippedAlias struct {
+	Name       string
+	Reason     AliasSkip
+	PlaylistID string // For AliasTaken, the playlist the tag adds to
+}
+
+// AliasResult describes what AddAliases did
+type AliasResult struct {
+	PlaylistID string         // Playlist the existing tag adds to
+	Added      []string       // Tags created, in the order given
+	Skipped    []SkippedAlias // Names left out, in the order given
+}
+
+// AddAliases creates tags pointing to the same playlist as an existing tag, or as the default playlist
+// for DefaultName. Names that are already tags or aren't valid are skipped, along with repeats.
+// All the new tags are saved in one write, so either all of them are added or none are.
+func (s *Store) AddAliases(existing string, names []string) (AliasResult, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	current := s.Config()
+	var result AliasResult
+	if existing == DefaultName {
+		result.PlaylistID = current.DefaultPlaylistID
+	} else if id, ok := current.Tags[existing]; ok {
+		result.PlaylistID = id
+	} else {
+		return result, fmt.Errorf("there's no %s%s tag", current.Prefix, existing)
+	}
+
+	tags := maps.Clone(current.Tags)
+	seen := make(map[string]bool, len(names))
+	for _, name := range names {
+		if seen[name] {
+			continue
+		}
+		seen[name] = true
+		skip := SkippedAlias{Name: name}
+		switch id, exists := tags[name]; {
+		case name == DefaultName:
+			skip.Reason = AliasReserved
+		case ValidateName(name) != nil:
+			skip.Reason = AliasInvalid
+		case id == result.PlaylistID:
+			skip.Reason = AliasExists
+		case exists:
+			skip.Reason, skip.PlaylistID = AliasTaken, id
+		default:
+			tags[name] = result.PlaylistID
+			result.Added = append(result.Added, name)
+			continue
+		}
+		result.Skipped = append(result.Skipped, skip)
+	}
+	if len(result.Added) == 0 {
+		return result, nil
+	}
+	if err := s.update(current, tags); err != nil {
+		return AliasResult{}, err
+	}
+	return result, nil
+}
+
 // Remove deletes a tag and returns the playlist it pointed to
 func (s *Store) Remove(name string) (previous string, err error) {
 	if err := ValidateName(name); err != nil {

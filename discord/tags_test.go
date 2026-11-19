@@ -184,6 +184,85 @@ func TestRemoveTag(t *testing.T) {
 	assert.Empty(t, store.Config().Tags)
 }
 
+func TestAliasTag(t *testing.T) {
+	const lateTestID = "LATE000000000000000000"
+	store := newTestTagStore(t, map[string][]string{
+		"gym": {gymTestID}, "workout": {gymTestID}, "chill": {lateTestID}, "relax": {lateTestID}, "zen": {chillTestID},
+	})
+	require.NoError(t, store.SetPlaylistName(gymTestID, "Gym Bangers"))
+	require.NoError(t, store.SetPlaylistName(lateTestID, "Late *Night*"))
+
+	// Names are split on spaces and commas, with optional prefixes, ignoring case and repeats.
+	// Skipped names are grouped by reason, in the order given.
+	reply := aliasTag(store, "!GYM", " +Lifting, !cardio,,chill\tworkout zen relax a.b default lifting LIFTING ")
+	assert.False(t, reply.private)
+	assert.Equal(t, "✅ **Added aliases for `!gym`**\n"+
+		"🎧 **[Gym Bangers]"+testPlaylistTarget(gymTestID)+"** — **`cardio`**, `gym`, **`lifting`**, `workout`\n"+
+		"-# Skipped `chill`, `relax` (already on Late \\*Night\\*, use /tag set to move them) · "+
+		"Skipped `workout` (already an alias) · "+
+		"Skipped `zen` (already on Untitled playlist, use /tag set to move it) · "+
+		"Skipped `a.b` (invalid name) · "+
+		"Skipped `default` (reserved for the default playlist)", reply.content)
+	assert.Equal(t, gymTestID, reply.playlistID)
+	assert.Equal(t, map[string]string{
+		"gym": gymTestID, "workout": gymTestID, "lifting": gymTestID, "cardio": gymTestID,
+		"chill": lateTestID, "relax": lateTestID, "zen": chillTestID,
+	}, store.Config().Tags)
+
+	// Nothing to add: a private reply with the reasons
+	reply = aliasTag(store, "gym", "lifting cardio chill bad`name")
+	assert.True(t, reply.private)
+	assert.Equal(t, "No tags added to `!gym`'s playlist:\n"+
+		"- Skipped `lifting`, `cardio` (already aliases)\n"+
+		"- Skipped `chill` (already on Late \\*Night\\*, use /tag set to move it)\n"+
+		"- Skipped `badname` (invalid name)", reply.content)
+	assert.Empty(t, reply.playlistID)
+
+	// Without skipped names, there's no subtext
+	reply = aliasTag(store, "workout", "fitness")
+	assert.Equal(t, "✅ **Added aliases for `!workout`**\n"+
+		"🎧 **[Gym Bangers]"+testPlaylistTarget(gymTestID)+"** — `cardio`, **`fitness`**, `gym`, `lifting`, `workout`", reply.content)
+}
+
+func TestAliasTagDefault(t *testing.T) {
+	store := newTestTagStore(t, map[string][]string{"gym": {gymTestID}})
+	reply := aliasTag(store, "+Default", "main, everything gym")
+	assert.False(t, reply.private)
+	assert.Equal(t, "✅ **Added aliases for `!default`**\n"+
+		"🎧 **[Default playlist]"+testPlaylistTarget(defaultTestID)+"** — `default`, **`everything`**, **`main`**\n"+
+		"-# Skipped `gym` (already on Untitled playlist, use /tag set to move it)", reply.content)
+	assert.Equal(t, defaultTestID, reply.playlistID)
+
+	// The default playlist's tags are aliases of default
+	reply = aliasTag(store, "default", "main")
+	assert.Equal(t, "No tags added to `!default`'s playlist:\n- Skipped `main` (already an alias)", reply.content)
+
+	// Other playlists on the default one are shown with their /tags label
+	reply = aliasTag(store, "gym", "main")
+	assert.Equal(t, "No tags added to `!gym`'s playlist:\n"+
+		"- Skipped `main` (already on Default playlist, use /tag set to move it)", reply.content)
+}
+
+func TestAliasTagErrors(t *testing.T) {
+	store := newTestTagStore(t, map[string][]string{"gym": {gymTestID}})
+	for _, tc := range []struct{ existing, names, want string }{
+		{"gymm", "lifting", "Couldn't add the tags: there's no !gymm tag"},
+		{"gym", " , ,, ", "Couldn't add the tags: list at least one new tag name."},
+		{"gym", "! +", "Couldn't add the tags: list at least one new tag name."},
+		{"gym", "a b c d e f g h i j k", "Couldn't add the tags: add at most 10 at once."},
+	} {
+		reply := aliasTag(store, tc.existing, tc.names)
+		assert.True(t, reply.private, tc)
+		assert.Equal(t, tc.want, reply.content, tc)
+	}
+	assert.Equal(t, map[string]string{"gym": gymTestID}, store.Config().Tags)
+
+	// Up to 10 names work, counting repeats once
+	reply := aliasTag(store, "gym", "a b c d e f g h i j A !a +j")
+	assert.False(t, reply.private)
+	assert.Len(t, store.Config().Tags, 11)
+}
+
 func TestTagChangeReplyFitsInAMessage(t *testing.T) {
 	many := map[string][]string{}
 	for i := range 80 {
@@ -229,6 +308,7 @@ func TestListTagsEmpty(t *testing.T) {
 		"> `/tag add` — create a tag",
 		"> `/tag set` — create a tag or change its playlist",
 		"> `/tag remove` — delete a tag",
+		"> `/tag alias` — add more tags to a tag's playlist",
 	}, "\n"), chunks[0])
 }
 
@@ -432,7 +512,8 @@ func TestListTagsSplitsLongLists(t *testing.T) {
 	assert.Contains(t, chunks[0], "> **How to tag**\n> `<song link> !a-very-long-tag-name-for-testing-0`")
 	assert.Contains(t, chunks[0], "> No tag → default playlist")
 	assert.True(t, strings.HasSuffix(chunks[len(chunks)-1], "> **Manage**\n> `/tag add` — create a tag\n"+
-		"> `/tag set` — create a tag or change its playlist\n> `/tag remove` — delete a tag"))
+		"> `/tag set` — create a tag or change its playlist\n> `/tag remove` — delete a tag\n"+
+		"> `/tag alias` — add more tags to a tag's playlist"))
 	// Every playlist is listed once, sorted by name
 	all := strings.Join(chunks, "\n")
 	assert.Equal(t, 43, strings.Count(all, "🎧 "))
@@ -445,7 +526,7 @@ func TestAutocompleteTags(t *testing.T) {
 	})
 	names := func(typed string) []string {
 		var out []string
-		for _, c := range autocompleteTags(store.Config(), typed) {
+		for _, c := range autocompleteTags(store.Config(), typed, false) {
 			out = append(out, c.Value.(string))
 		}
 		return out
@@ -454,8 +535,19 @@ func TestAutocompleteTags(t *testing.T) {
 	assert.Equal(t, []string{"chill-gym", "gym"}, names("!GY"))
 	assert.Equal(t, []string{"chill-gym", "gym"}, names("+gy"))
 	// Never nil: Discord requires the choices field
-	assert.NotNil(t, autocompleteTags(store.Config(), "zzz"))
+	assert.NotNil(t, autocompleteTags(store.Config(), "zzz", false))
 	assert.Empty(t, names("zzz"))
+
+	// /tag alias also suggests default, sorted with the other tags
+	var aliasNames []string
+	for _, c := range autocompleteTags(store.Config(), "", true) {
+		aliasNames = append(aliasNames, c.Value.(string))
+	}
+	assert.Equal(t, []string{"chill", "chill-gym", "default", "gym"}, aliasNames)
+	choices := autocompleteTags(store.Config(), "!DEF", true)
+	require.Len(t, choices, 1)
+	assert.Equal(t, "!default", choices[0].Name)
+	assert.Equal(t, "default", choices[0].Value)
 }
 
 func TestTagCommandsDefinitions(t *testing.T) {

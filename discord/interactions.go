@@ -226,19 +226,22 @@ func (h *InteractionSessionHandler) tagsCommand(s *discordgo.Session, i *discord
 	}
 }
 
-// tagCommand handles /tag add, /tag set and /tag remove
+// tagCommand handles /tag add, /tag set, /tag remove and /tag alias
 func (h *InteractionSessionHandler) tagCommand(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	data := i.ApplicationCommandData()
 	if len(data.Options) == 0 {
 		return
 	}
 	sub := data.Options[0]
-	var name, playlist string
+	var name, playlist, newTags string
 	if opt := sub.GetOption(tagOption); opt != nil {
 		name = opt.StringValue()
 	}
 	if opt := sub.GetOption(playlistOption); opt != nil {
 		playlist = opt.StringValue()
+	}
+	if opt := sub.GetOption(newTagsOption); opt != nil {
+		newTags = opt.StringValue()
 	}
 
 	var reply tagReply
@@ -249,6 +252,8 @@ func (h *InteractionSessionHandler) tagCommand(s *discordgo.Session, i *discordg
 		reply = setTag(h.tags, name, playlist)
 	case tagRemoveSubcommand:
 		reply = removeTag(h.tags, name)
+	case tagAliasSubcommand:
+		reply = aliasTag(h.tags, name, newTags)
 	default:
 		logger.Error("unknown tag subcommand", zap.String(zapkey.Command, sub.Name))
 		return
@@ -274,7 +279,7 @@ func (h *InteractionSessionHandler) autocomplete(s *discordgo.Session, i *discor
 	choices := []*discordgo.ApplicationCommandOptionChoice{}
 	for _, opt := range data.Options[0].Options {
 		if opt.Focused && opt.Name == tagOption {
-			choices = autocompleteTags(h.tags.Config(), opt.StringValue())
+			choices = autocompleteTags(h.tags.Config(), opt.StringValue(), data.Options[0].Name == tagAliasSubcommand)
 		}
 	}
 	// Sent directly because InteractionResponseData omits an empty choices list,

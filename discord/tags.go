@@ -24,9 +24,17 @@ const (
 	tagAddSubcommand    = "add"
 	tagSetSubcommand    = "set"
 	tagRemoveSubcommand = "remove"
+	tagAliasSubcommand  = "alias"
 
 	tagOption      = "tag"
 	playlistOption = "playlist"
+	newTagsOption  = "new"
+)
+
+// Limits on /tag alias, to keep its reply short
+const (
+	maxAliases       = 10
+	maxNewTagsLength = 300
 )
 
 // maxMessageLength is Discord's limit on the length of a message
@@ -38,6 +46,7 @@ type TagStore interface {
 	Add(name, playlistID string) (existing string, err error)
 	Set(name, playlistID string) (previous string, err error)
 	Remove(name string) (previous string, err error)
+	AddAliases(existing string, names []string) (trigger.AliasResult, error)
 }
 
 // tagCommands returns the slash command definitions for managing tags.
@@ -90,6 +99,21 @@ func tagCommands() []*discordgo.ApplicationCommand {
 					Description: "Delete a tag",
 					Options: []*discordgo.ApplicationCommandOption{
 						tagName("Tag to delete", true),
+					},
+				},
+				{
+					Type:        discordgo.ApplicationCommandOptionSubCommand,
+					Name:        tagAliasSubcommand,
+					Description: "Add more tags to an existing tag's playlist",
+					Options: []*discordgo.ApplicationCommandOption{
+						tagName("Existing tag whose playlist the new tags add to, or default for the default playlist", true),
+						{
+							Type:        discordgo.ApplicationCommandOptionString,
+							Name:        newTagsOption,
+							Description: fmt.Sprintf("Up to %d new tag names, separated by spaces or commas, e.g. lifting workout", maxAliases),
+							Required:    true,
+							MaxLength:   maxNewTagsLength,
+						},
 					},
 				},
 			},
@@ -213,6 +237,7 @@ func listTags(c *trigger.Config, name func(id string) string) []string {
 		"> `/tag add` — create a tag",
 		"> `/tag set` — create a tag or change its playlist",
 		"> `/tag remove` — delete a tag",
+		"> `/tag alias` — add more tags to a tag's playlist",
 	}, "\n"))
 	return chunkLines(blocks, maxMessageLength)
 }
@@ -249,6 +274,12 @@ func playlistLine(c *trigger.Config, id, name string, tags, bold []string) strin
 // playlistMarkdownLink formats a playlist as a masked link without an embed preview, labelled with
 // its name (see cleanPlaylistName), or with the /tags fallback label if the name isn't known
 func playlistMarkdownLink(c *trigger.Config, id, name string) string {
+	return fmt.Sprintf("[%s](<%s>)", playlistLabel(c, id, name), playlistURL(id))
+}
+
+// playlistLabel formats a playlist's name (see cleanPlaylistName) as escaped text,
+// or as the /tags fallback label if the name isn't known
+func playlistLabel(c *trigger.Config, id, name string) string {
 	name = cleanPlaylistName(name)
 	if name == "" {
 		name = untitledPlaylistLabel
@@ -256,7 +287,7 @@ func playlistMarkdownLink(c *trigger.Config, id, name string) string {
 			name = defaultPlaylistLabel
 		}
 	}
-	return fmt.Sprintf("[%s](<%s>)", escapeMarkdown(name), playlistURL(id))
+	return escapeMarkdown(name)
 }
 
 // exampleTagNames picks two different tags for the /tags examples, preferring, in order:
@@ -509,11 +540,98 @@ func removeTag(store TagStore, rawName string) tagReply {
 	return tagReply{content: tagChangeReply(store.Config(), header, previous, oldName, nil, subtext)}
 }
 
-// autocompleteTags suggests existing tag names that contain what the user has typed
-func autocompleteTags(c *trigger.Config, typed string) []*discordgo.ApplicationCommandOptionChoice {
+// aliasTag handles /tag alias, which adds tags to an existing tag's playlist, or to the default
+// playlist for default. rawNames lists the new tags, separated by spaces or commas. Tags that
+// already exist are never moved, so nobody replaces one by accident.
+func aliasTag(store TagStore, rawExisting, rawNames string) tagReply {
+	c := store.Config()
+	existing := normalizeTagName(c, rawExisting)
+	const failure = "Couldn't add the tags: "
+	var names []string
+	for _, raw := range strings.FieldsFunc(rawNames, func(r rune) bool { return r == ',' || unicode.IsSpace(r) }) {
+		if name := normalizeTagName(c, raw); name != "" && !slices.Contains(names, name) {
+			names = append(names, name)
+		}
+	}
+	if len(names) == 0 {
+		return tagReply{content: failure + "list at least one new tag name.", private: true}
+	}
+	if len(names) > maxAliases {
+		return tagReply{content: fmt.Sprintf("%sadd at most %d at once.", failure, maxAliases), private: true}
+	}
+
+	result, err := store.AddAliases(existing, names)
+	if err != nil {
+		return tagReply{content: failure + err.Error(), private: true}
+	}
+	c = store.Config()
+	nameOf := cachedPlaylistNames(store)
+	skipped := skippedAliases(c, result.Skipped, nameOf)
+	if len(result.Added) == 0 {
+		lines := append([]string{fmt.Sprintf("No tags added to `%s%s`'s playlist:", c.Prefix, existing)}, skipped...)
+		return tagReply{content: strings.Join(lines, "\n- "), private: true}
+	}
+	header := fmt.Sprintf("✅ **Added aliases for `%s%s`**", c.Prefix, existing)
+	content := tagChangeReply(c, header, result.PlaylistID, nameOf(result.PlaylistID), result.Added, skipped...)
+	return tagReply{content: content, playlistID: result.PlaylistID}
+}
+
+// skippedAliases explains why /tag alias left names out, with one part per reason.
+// name returns a playlist's name, or "" if it isn't known.
+func skippedAliases(c *trigger.Config, skipped []trigger.SkippedAlias, name func(id string) string) []string {
+	type group struct {
+		reason     trigger.AliasSkip
+		playlistID string
+	}
+	var groups []group
+	names := map[group][]string{}
+	for _, skip := range skipped {
+		g := group{skip.Reason, skip.PlaylistID}
+		if _, ok := names[g]; !ok {
+			groups = append(groups, g)
+		}
+		// Invalid names are shown as typed, so backticks would end the code span
+		names[g] = append(names[g], "`"+strings.ReplaceAll(skip.Name, "`", "")+"`")
+	}
+	parts := make([]string, 0, len(groups))
+	for _, g := range groups {
+		one := len(names[g]) == 1
+		var reason string
+		switch g.reason {
+		case trigger.AliasExists:
+			reason = plural(one, "already an alias", "already aliases")
+		case trigger.AliasTaken:
+			reason = fmt.Sprintf("already on %s, use /tag set to move %s",
+				playlistLabel(c, g.playlistID, name(g.playlistID)), plural(one, "it", "them"))
+		case trigger.AliasInvalid:
+			reason = plural(one, "invalid name", "invalid names")
+		case trigger.AliasReserved:
+			reason = "reserved for the default playlist"
+		}
+		parts = append(parts, fmt.Sprintf("Skipped %s (%s)", strings.Join(names[g], ", "), reason))
+	}
+	return parts
+}
+
+// plural returns singular if one is true, and plural otherwise
+func plural(one bool, singular, many string) string {
+	if one {
+		return singular
+	}
+	return many
+}
+
+// autocompleteTags suggests existing tag names that contain what the user has typed,
+// along with the reserved default tag if withDefault is true
+func autocompleteTags(c *trigger.Config, typed string, withDefault bool) []*discordgo.ApplicationCommandOptionChoice {
 	typed = normalizeTagName(c, typed)
+	names := slices.Collect(maps.Keys(c.Tags))
+	if withDefault {
+		names = append(names, trigger.DefaultName)
+	}
+	slices.Sort(names)
 	choices := []*discordgo.ApplicationCommandOptionChoice{}
-	for _, name := range slices.Sorted(maps.Keys(c.Tags)) {
+	for _, name := range names {
 		if !strings.Contains(name, typed) {
 			continue
 		}

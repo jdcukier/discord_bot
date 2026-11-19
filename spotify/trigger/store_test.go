@@ -545,6 +545,103 @@ func TestStoreSetErrors(t *testing.T) {
 	assert.Empty(t, store.Config().Tags)
 }
 
+func TestStoreAddAliases(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "tags.yaml")
+	store, _ := openTestStore(t, path, map[string][]string{"gym": {gymID}, "workout": {gymID}, "chill": {chillID}})
+	require.NoError(t, store.SetPlaylistName(gymID, "Gym"))
+	before, err := os.Stat(path)
+	require.NoError(t, err)
+
+	result, err := store.AddAliases("gym", []string{"lifting", "workout", "chill", "two words", "default", "cardio", "lifting", "Gym"})
+	require.NoError(t, err)
+	assert.Equal(t, AliasResult{
+		PlaylistID: gymID,
+		Added:      []string{"lifting", "cardio"},
+		Skipped: []SkippedAlias{
+			{Name: "workout", Reason: AliasExists},
+			{Name: "chill", Reason: AliasTaken, PlaylistID: chillID},
+			{Name: "two words", Reason: AliasInvalid},
+			{Name: "default", Reason: AliasReserved},
+			{Name: "Gym", Reason: AliasInvalid},
+		},
+	}, result)
+	want := map[string]string{"gym": gymID, "workout": gymID, "lifting": gymID, "cardio": gymID, "chill": chillID}
+	assert.Equal(t, want, store.Config().Tags)
+
+	// Both new tags were saved together, keeping the playlist's name
+	after, err := os.Stat(path)
+	require.NoError(t, err)
+	assert.False(t, os.SameFile(before, after), "the file was replaced")
+	assert.Equal(t, Header+`playlists:
+  - id: `+chillID+`
+    tags:
+      - chill
+  - name: Gym
+    id: `+gymID+`
+    tags:
+      - cardio
+      - gym
+      - lifting
+      - workout
+`, readFile(t, path))
+	reopened, _ := openTestStore(t, path, nil)
+	assert.Equal(t, want, reopened.Config().Tags)
+
+	// Changes apply to message routing immediately
+	got, _ := store.Config().Resolve("link !cardio")
+	assert.Equal(t, []string{gymID}, got)
+}
+
+func TestStoreAddAliasesToDefault(t *testing.T) {
+	store, _ := openTestStore(t, filepath.Join(t.TempDir(), "tags.yaml"), map[string][]string{"main": {defaultID}})
+
+	result, err := store.AddAliases(DefaultName, []string{"main", "everything"})
+	require.NoError(t, err)
+	assert.Equal(t, defaultID, result.PlaylistID)
+	assert.Equal(t, []string{"everything"}, result.Added)
+	assert.Equal(t, []SkippedAlias{{Name: "main", Reason: AliasExists}}, result.Skipped)
+	assert.Equal(t, map[string]string{"main": defaultID, "everything": defaultID}, store.Config().Tags)
+}
+
+func TestStoreAddAliasesNothingToAdd(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "tags.yaml")
+	store, _ := openTestStore(t, path, map[string][]string{"gym": {gymID}, "chill": {chillID}})
+	before, err := os.Stat(path)
+	require.NoError(t, err)
+
+	_, err = store.AddAliases("gymm", []string{"lifting"})
+	assert.EqualError(t, err, "there's no !gymm tag")
+
+	result, err := store.AddAliases("gym", []string{"gym", "chill"})
+	require.NoError(t, err)
+	assert.Empty(t, result.Added)
+	assert.Len(t, result.Skipped, 2)
+
+	// Nothing was saved
+	assert.Equal(t, map[string]string{"gym": gymID, "chill": chillID}, store.Config().Tags)
+	after, err := os.Stat(path)
+	require.NoError(t, err)
+	assert.True(t, os.SameFile(before, after))
+}
+
+func TestStoreAddAliasesSaveFails(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores directory permissions")
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "tags.yaml")
+	store, _ := openTestStore(t, path, map[string][]string{"gym": {gymID}})
+	want := readFile(t, path)
+	require.NoError(t, os.Chmod(dir, 0o500))
+	t.Cleanup(func() { os.Chmod(dir, 0o700) })
+
+	// None of the tags are added, in memory or on disk
+	_, err := store.AddAliases("gym", []string{"lifting", "cardio"})
+	require.Error(t, err)
+	assert.Equal(t, map[string]string{"gym": gymID}, store.Config().Tags)
+	assert.Equal(t, want, readFile(t, path))
+}
+
 func TestParsePlaylistID(t *testing.T) {
 	for input, want := range map[string]string{
 		gymID: gymID,
