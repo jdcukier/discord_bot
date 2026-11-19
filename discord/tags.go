@@ -257,11 +257,22 @@ func tagsByPlaylist(c *trigger.Config) map[string][]string {
 // playlistLine formats a playlist and its tags as in /tags, bolding the tags listed in bold.
 // name is the playlist's name, or "" if it isn't known. A playlist without tags says so.
 func playlistLine(c *trigger.Config, id, name string, tags, bold []string) string {
-	formatted := make([]string, len(tags))
+	return playlistLineWithout(c, id, name, tags, bold, nil)
+}
+
+// playlistLineWithout is playlistLine with the tags in omitted left out, each run of them shown as an ellipsis
+func playlistLineWithout(c *trigger.Config, id, name string, tags, bold []string, omitted map[string]bool) string {
+	var formatted []string
 	for i, tag := range tags {
-		formatted[i] = "`" + tag + "`"
-		if slices.Contains(bold, tag) {
-			formatted[i] = "**" + formatted[i] + "**"
+		switch {
+		case !omitted[tag]:
+			item := "`" + tag + "`"
+			if slices.Contains(bold, tag) {
+				item = "**" + item + "**"
+			}
+			formatted = append(formatted, item)
+		case i == 0 || !omitted[tags[i-1]]:
+			formatted = append(formatted, "…")
 		}
 	}
 	list := strings.Join(formatted, ", ")
@@ -417,35 +428,79 @@ func escapeMarkdown(s string) string {
 // subtextSeparator separates the parts of a tag reply's subtext
 const subtextSeparator = " · "
 
+// minPlaylistLineLength is the room a tag reply's playlist line keeps, if it needs it, before the subtext
+// is shortened. It fits the longest link (see maxPlaylistNameLength) with a few tags.
+const minPlaylistLineLength = 600
+
 // tagChangeReply formats the public reply to a tag change: the header line, the playlist's line as
 // in /tags (bolding the tags listed in bold), and the non-empty subtext parts on one subtext line.
-// c must be the configuration after the change. name is the playlist's name, or "" if it isn't known.
-// The reply fits in a message: if the playlist line is too long, its last tags are left out.
+// c must be the configuration after the change. name is the playlist's raw name, or "" if it isn't
+// known; it's cleaned and escaped like in /tags. Tags in bold that aren't on the playlist are ignored.
+//
+// header and the subtext parts are inserted as raw, trusted markdown: callers must escape anything
+// users or Spotify control (e.g. with playlistLabel or escapeMarkdown), and keep each one on a single
+// line, since a newline breaks the layout.
+//
+// The reply fits in a message. If it's too long, the last subtext parts are left out first, as long
+// as the playlist line needs the room, then the playlist line's tags are left out, bolded ones last.
 func tagChangeReply(c *trigger.Config, header, playlistID, name string, bold []string, subtext ...string) string {
 	subtext = slices.DeleteFunc(slices.Clone(subtext), func(part string) bool { return part == "" })
-	lines := []string{header, ""}
+	tags := tagsByPlaylist(c)[playlistID]
+	lines := []string{header}
 	if len(subtext) > 0 {
-		lines = append(lines, "-# "+strings.Join(subtext, subtextSeparator))
+		lineRoom := min(len(playlistLine(c, playlistID, name, tags, bold)), minPlaylistLineLength)
+		room := maxMessageLength - len(header) - len("\n") - lineRoom - len("\n")
+		if sub := fitSubtext(subtext, room); sub != "" {
+			lines = append(lines, sub)
+		}
 	}
-	budget := maxMessageLength - len(strings.Join(lines, "\n"))
-	lines[1] = fitPlaylistLine(playlistLine(c, playlistID, name, tagsByPlaylist(c)[playlistID], bold), budget)
+	budget := maxMessageLength - len(strings.Join(lines, "\n")) - len("\n")
+	line := fitPlaylistLine(c, playlistID, name, tags, bold, budget)
+	lines = slices.Insert(lines, 1, line)
 	return truncate(strings.Join(lines, "\n"), maxMessageLength)
 }
 
-// fitPlaylistLine shortens a playlist line to at most limit bytes by leaving out its last tags,
-// so the link and the remaining tags stay whole
-func fitPlaylistLine(line string, limit int) string {
-	const more = ", …"
-	if len(line) <= limit {
-		return line
-	}
-	tagsStart := strings.Index(line, " — ") + len(" — ")
-	if limit >= len(more) {
-		if cut := strings.LastIndex(line[:limit-len(more)+len(",")], ", "); cut >= tagsStart {
-			return line[:cut] + more
+// fitSubtext joins the subtext parts on a subtext line of at most limit bytes, leaving out the
+// last parts (marked with an ellipsis) if needed. It returns "" if not even one part fits whole.
+func fitSubtext(parts []string, limit int) string {
+	for n := len(parts); n > 0; n-- {
+		kept := slices.Clone(parts[:n])
+		if n < len(parts) {
+			kept = append(kept, "…")
+		}
+		if line := "-# " + strings.Join(kept, subtextSeparator); len(line) <= limit {
+			return line
 		}
 	}
-	return truncate(line, max(limit, 0))
+	return ""
+}
+
+// fitPlaylistLine formats a playlist line of at most limit bytes, leaving out tags from the end
+// (unbolded ones first) if needed, so the link and the remaining tags stay whole. Without room
+// for the link, it returns a bare ellipsis line, or "" if even that doesn't fit.
+func fitPlaylistLine(c *trigger.Config, id, name string, tags, bold []string, limit int) string {
+	omitted := map[string]bool{}
+	for {
+		line := playlistLineWithout(c, id, name, tags, bold, omitted)
+		if len(line) <= limit {
+			return line
+		}
+		if len(omitted) == len(tags) {
+			break
+		}
+		next := ""
+		for _, tag := range slices.Backward(tags) {
+			if !omitted[tag] && (next == "" || (slices.Contains(bold, next) && !slices.Contains(bold, tag))) {
+				next = tag
+			}
+		}
+		omitted[next] = true
+	}
+	const fallback = "🎧 …"
+	if len(fallback) <= limit {
+		return fallback
+	}
+	return ""
 }
 
 // cachedPlaylistNames returns the store's cached playlist name lookup. It returns "" for unknown names.
@@ -716,12 +771,15 @@ func splitLongLines(lines []string, limit int) []string {
 	return out
 }
 
-// truncate shortens s to at most limit bytes, marking the cut with an ellipsis
+// truncate shortens s to at most limit bytes, marking the cut with an ellipsis if there's room for it
 func truncate(s string, limit int) string {
 	if len(s) <= limit {
 		return s
 	}
 	const ellipsis = "…"
+	if limit < len(ellipsis) {
+		return s[:runeBoundary(s, max(limit, 0))]
+	}
 	return s[:runeBoundary(s, limit-len(ellipsis))] + ellipsis
 }
 

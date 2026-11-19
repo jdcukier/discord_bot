@@ -274,13 +274,70 @@ func TestTagChangeReplyFitsInAMessage(t *testing.T) {
 	lines := strings.Split(reply.content, "\n")
 	require.Len(t, lines, 3)
 	assert.Equal(t, "✅ **Added `!zzz`**", lines[0])
-	// The last tags are left out whole, keeping the header and subtext
+	// The last tags are left out whole, except the bolded one, keeping the header and subtext
 	assert.True(t, strings.HasPrefix(lines[1], "🎧 **[Untitled playlist]"+testPlaylistTarget(gymTestID)+"** — `a-rather-long-tag-name-number-00`, "))
-	assert.True(t, strings.HasSuffix(lines[1], "`, …"), lines[1])
+	assert.True(t, strings.HasSuffix(lines[1], "`, …, **`zzz`**"), lines[1])
 	assert.Equal(t, "-# `+zzz` also adds to the default", lines[2])
+}
 
-	// Without room for a single tag, the line is cut
-	assert.Equal(t, "🎧 **[A]…", fitPlaylistLine("🎧 **[A](<https://open.spotify.com/playlist/x>)** — `a`, `b`", 13))
+func TestFitPlaylistLine(t *testing.T) {
+	c := newTestTagStore(t, nil).Config()
+	link := "🎧 **[A]" + testPlaylistTarget(gymTestID) + "** — "
+	tags := []string{"aa", "bb", "cc", "dd"}
+	bold := []string{"bb", "dd"}
+	full := link + "`aa`, **`bb`**, `cc`, **`dd`**"
+	assert.Equal(t, full, fitPlaylistLine(c, gymTestID, "A", tags, bold, len(full)))
+	// Unbolded tags go first, from the end, each run shown as one ellipsis
+	assert.Equal(t, link+"`aa`, **`bb`**, …, **`dd`**", fitPlaylistLine(c, gymTestID, "A", tags, bold, len(full)-1))
+	assert.Equal(t, link+"…, **`bb`**, …, **`dd`**", fitPlaylistLine(c, gymTestID, "A", tags, bold, len(full)-2))
+	// Then bolded ones, from the end
+	assert.Equal(t, link+"…, **`bb`**, …", fitPlaylistLine(c, gymTestID, "A", tags, bold, len(full)-3))
+	assert.Equal(t, link+"…", fitPlaylistLine(c, gymTestID, "A", tags, bold, len(link)+17))
+
+	// Without room for the link, the line is a bare ellipsis, so no markdown is left open
+	assert.Equal(t, "🎧 …", fitPlaylistLine(c, gymTestID, "A", tags, nil, 13))
+	assert.Equal(t, "🎧 …", fitPlaylistLine(c, gymTestID, "A", nil, nil, 13))
+	assert.Empty(t, fitPlaylistLine(c, gymTestID, "A", tags, nil, 2))
+	assert.Empty(t, fitPlaylistLine(c, gymTestID, "A", tags, nil, -5))
+}
+
+func TestTagChangeReplyLongHeaderAndSubtext(t *testing.T) {
+	store := newTestTagStore(t, map[string][]string{"gym": {gymTestID}, "zzz": {gymTestID}})
+	c := store.Config()
+	line := "🎧 **[A]" + testPlaylistTarget(gymTestID) + "** — `gym`, **`zzz`**"
+
+	// Headers of any length never panic, and the reply always fits
+	for n := 1900; n <= 2100; n++ {
+		reply := tagChangeReply(c, strings.Repeat("h", n), gymTestID, "A", []string{"zzz"}, "sub")
+		assert.LessOrEqual(t, len(reply), maxMessageLength, n)
+		assert.True(t, utf8.ValidString(reply), n)
+	}
+
+	// Long subtext is cut by whole parts so the playlist line keeps its room
+	long := strings.Repeat("s", 1000)
+	reply := tagChangeReply(c, "header", gymTestID, "A", []string{"zzz"}, "first", long, long, "last")
+	assert.Equal(t, "header\n"+line+"\n-# first · "+long+" · …", reply)
+
+	// A single part that doesn't fit is dropped
+	reply = tagChangeReply(c, "header", gymTestID, "A", []string{"zzz"}, strings.Repeat("s", 1990))
+	assert.Equal(t, "header\n"+line, reply)
+
+	// A long playlist line keeps its minimum room before the subtext, then gets what's left
+	many := map[string][]string{}
+	for i := range 80 {
+		many[fmt.Sprintf("a-rather-long-tag-name-number-%02d", i)] = []string{gymTestID}
+	}
+	manyConfig := newTestTagStore(t, many).Config()
+	reply = tagChangeReply(manyConfig, "header", gymTestID, "A", nil, "first", long, long, "last")
+	lines := strings.Split(reply, "\n")
+	require.Len(t, lines, 3)
+	assert.LessOrEqual(t, len(reply), maxMessageLength)
+	assert.GreaterOrEqual(t, len(lines[1]), minPlaylistLineLength-50) // Less up to one tag
+	assert.Equal(t, "-# first · "+long+" · …", lines[2])
+
+	// Bold names not on the playlist are ignored
+	reply = tagChangeReply(c, "header", gymTestID, "A", []string{"other"})
+	assert.Equal(t, "header\n🎧 **[A]"+testPlaylistTarget(gymTestID)+"** — `gym`, `zzz`", reply)
 }
 
 // testNames returns playlist names from a map, and "" for unknown playlists
@@ -584,4 +641,11 @@ func TestTruncate(t *testing.T) {
 	got := truncate(strings.Repeat("é", 10), 9)
 	assert.LessOrEqual(t, len(got), 9)
 	assert.Equal(t, "ééé…", got)
+
+	// Without room for the ellipsis, the cut isn't marked
+	for limit := -1; limit < len("…"); limit++ {
+		assert.NotPanics(t, func() { got = truncate("abcdef", limit) })
+		assert.Equal(t, "abcdef"[:max(limit, 0)], got)
+	}
+	assert.Equal(t, "", truncate("éé", 1))
 }
