@@ -236,6 +236,7 @@ func TestCleanPlaylistName(t *testing.T) {
 	zeroWidth := string(rune(0x200b))
 	assert.Equal(t, "abcdef", cleanPlaylistName("a"+zeroWidth+"b"+string(rune(0x202e))+"c"+string(rune(0x2066))+
 		"d"+string(rune(0xfeff))+"e"+string([]rune{0x200e, 0x200f})+"f"))
+	assert.Equal(t, "ab", cleanPlaylistName("a"+string(rune(0x061c))+"b"), "Arabic letter mark")
 	// Only invisible characters: treated as unknown
 	assert.Equal(t, "", cleanPlaylistName(zeroWidth+"\n"))
 
@@ -264,6 +265,21 @@ func TestCleanPlaylistName(t *testing.T) {
 	assert.Equal(t, pad+"…", cleanPlaylistName(pad+"e"+string(rune(0x0301))+"z"))
 	// An emoji with a skin tone modifier
 	assert.Equal(t, pad+"…", cleanPlaylistName(pad+string([]rune{0x1F44D, 0x1F3FD})+"z"))
+	// A spacing combining mark (Devanagari "ki")
+	assert.Equal(t, pad+"…", cleanPlaylistName(pad+string([]rune{0x0915, 0x093F})+"z"))
+
+	// Flags (pairs of regional indicators) aren't split
+	fr, de := string([]rune{0x1F1EB, 0x1F1F7}), string([]rune{0x1F1E9, 0x1F1EA})
+	assert.Equal(t, pad+"…", cleanPlaylistName(pad+fr+"abc"))
+	pad = strings.Repeat("x", maxPlaylistNameLength-3)
+	assert.Equal(t, pad+fr+"…", cleanPlaylistName(pad+fr+"abc"), "a whole flag fits")
+	pad = strings.Repeat("x", maxPlaylistNameLength-4)
+	assert.Equal(t, pad+fr+"…", cleanPlaylistName(pad+fr+de+"abc"), "the second flag straddles the limit")
+
+	// Without a clean place to cut, the name is cut at the limit rather than dropped
+	accent := string(rune(0x0301))
+	got = cleanPlaylistName("a" + strings.Repeat(accent, 150))
+	assert.Equal(t, "a"+strings.Repeat(accent, maxPlaylistNameLength-2)+"…", got)
 }
 
 func TestListTagsLongAndUnsafeNames(t *testing.T) {

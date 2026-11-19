@@ -280,9 +280,11 @@ const (
 )
 
 // hiddenCharacters are invisible characters dropped from playlist names: the zero-width space,
-// bidi marks, embeddings, overrides and isolates, and the byte order mark. Other format characters
-// are kept, since joiners and emoji tag characters are part of words, emoji and flags.
+// bidi marks (including the Arabic letter mark), embeddings, overrides and isolates, and the byte
+// order mark. Other format characters are kept, since joiners and emoji tag characters are part
+// of words, emoji and flags. Ranges must stay in ascending order.
 var hiddenCharacters = &unicode.RangeTable{R16: []unicode.Range16{
+	{Lo: 0x061C, Hi: 0x061C, Stride: 1},
 	{Lo: 0x200B, Hi: 0x200B, Stride: 1},
 	{Lo: 0x200E, Hi: 0x200F, Stride: 1},
 	{Lo: 0x202A, Hi: 0x202E, Stride: 1},
@@ -314,13 +316,31 @@ func cleanPlaylistName(name string) string {
 	for cut > 0 && (extendsPrevious(runes[cut]) || runes[cut-1] == zeroWidthJoiner) {
 		cut--
 	}
+	// Flags are pairs of regional indicators, so don't cut after an odd number of them
+	if cut > 0 && isRegionalIndicator(runes[cut]) {
+		run := 0
+		for i := cut - 1; i >= 0 && isRegionalIndicator(runes[i]); i-- {
+			run++
+		}
+		if run%2 == 1 {
+			cut--
+		}
+	}
+	if cut == 0 { // Nothing to cut cleanly at, e.g. a letter with many accents
+		cut = maxPlaylistNameLength - 1
+	}
 	return strings.TrimSpace(string(runes[:cut])) + "…"
+}
+
+// isRegionalIndicator reports whether r is one of the letters that make up flag emoji
+func isRegionalIndicator(r rune) bool {
+	return r >= 0x1F1E6 && r <= 0x1F1FF
 }
 
 // extendsPrevious reports whether r belongs with the character before it: a combining mark,
 // variation selector, joiner, emoji tag character or emoji skin tone modifier
 func extendsPrevious(r rune) bool {
-	return unicode.In(r, unicode.Mn, unicode.Me) ||
+	return unicode.In(r, unicode.Mn, unicode.Mc, unicode.Me) ||
 		(r >= 0xFE00 && r <= 0xFE0F) ||
 		r == zeroWidthJoiner || r == zeroWidthNonJoiner ||
 		(r >= 0xE0020 && r <= 0xE007F) ||
