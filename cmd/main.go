@@ -160,6 +160,7 @@ func withVersion(msg string) string {
 var (
 	_ discord.PlaylistNameFetcher = (*spotify.Client)(nil)
 	_ discord.PlaylistNameStore   = (*trigger.Store)(nil)
+	_ discord.PlaylistNamer       = (*trigger.Store)(nil) // So /tags shows the names
 )
 
 // staticTriggers is a trigger source that never changes

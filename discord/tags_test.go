@@ -297,23 +297,21 @@ func TestListTagsLongAndUnsafeNames(t *testing.T) {
 }
 
 // namedTagStore is a tag store that knows playlist names
-type namedTagStore struct {
-	*trigger.Store
-	names map[string]string
-}
-
-func (s namedTagStore) PlaylistName(id string) string { return s.names[id] }
+// namelessTagStore hides the store's playlist names
+type namelessTagStore struct{ TagStore }
 
 func TestPlaylistNames(t *testing.T) {
 	store := newTestTagStore(t, map[string][]string{"gym": {gymTestID}})
 	// Stores that don't know names give no lookup
-	assert.Nil(t, playlistNames(store))
+	assert.Nil(t, playlistNames(namelessTagStore{store}))
 
-	named := namedTagStore{Store: store, names: map[string]string{gymTestID: "Gym Bangers"}}
-	name := playlistNames(named)
+	// The tags file keeps the names
+	name := playlistNames(store)
 	require.NotNil(t, name)
+	assert.Empty(t, name(gymTestID))
+	require.NoError(t, store.SetPlaylistName(gymTestID, "Gym Bangers"))
 	assert.Equal(t, "Gym Bangers", name(gymTestID))
-	assert.Contains(t, listTags(named.Config(), name)[0], "🎧 **[Gym Bangers](<https://open.spotify.com/playlist/"+gymTestID+">)** — `gym`")
+	assert.Contains(t, listTags(store.Config(), name)[0], "🎧 **[Gym Bangers](<https://open.spotify.com/playlist/"+gymTestID+">)** — `gym`")
 }
 
 func TestListTagsSplitsLongLists(t *testing.T) {
