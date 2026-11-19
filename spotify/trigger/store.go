@@ -16,6 +16,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf16"
 
 	"go.yaml.in/yaml/v3"
 
@@ -87,6 +88,7 @@ type OpenResult struct {
 	YAMLBackup string              // Where the YAML file was moved before converting a newer JSON file, e.g. after a rollback
 	SaveErr    error               // Converting the JSON file worked but saving the YAML file didn't; it's retried on the next change
 	BackupErr  error               // The YAML file is in use, but the JSON file couldn't be moved aside (retried on the next change) or the move flushed
+	LongNames  []string            // Tags longer than MaxNameLength, saved before the limit existed. They work but can't be created again.
 }
 
 // BackupSuffix is added to the path of a tags file to back it up: the JSON file once it's converted
@@ -129,6 +131,9 @@ func redactIDs(err error) error {
 // Anything that looks like a playlist ID is shortened in the errors, since they're logged.
 func OpenStore(path string, settings *Config, seed map[string][]string) (*Store, OpenResult, error) {
 	s, result, err := openStore(StorePath(path), settings, seed)
+	if s != nil {
+		result.LongNames = longNames(s.Config().Tags)
+	}
 	result.SaveErr = redactIDs(result.SaveErr)
 	result.BackupErr = redactIDs(result.BackupErr)
 	return s, result, redactIDs(err)
@@ -392,7 +397,7 @@ func (s *Store) Set(name, playlistID string) (previous string, err error) {
 
 // set creates a tag, or replaces its playlist if replace is true, and returns its previous playlist
 func (s *Store) set(name, playlistID string, replace bool) (previous string, err error) {
-	if err := ValidateName(name); err != nil {
+	if err := ValidateNewName(name); err != nil {
 		return "", err
 	}
 	if !playlistIDRegex.MatchString(playlistID) {
@@ -410,6 +415,84 @@ func (s *Store) set(name, playlistID string, replace bool) (previous string, err
 	tags := maps.Clone(current.Tags)
 	tags[name] = playlistID
 	return previous, s.update(current, tags)
+}
+
+// AliasSkip is why AddAliases left a name out
+type AliasSkip int
+
+const (
+	AliasExists   AliasSkip = iota + 1 // The tag already adds to the playlist
+	AliasTaken                         // The tag adds to another playlist, which AddAliases never changes
+	AliasInvalid                       // The name isn't a valid tag name
+	AliasReserved                      // The name is DefaultName
+	AliasTooLong                       // The name is valid but longer than MaxNameLength
+)
+
+// SkippedAlias is a name AddAliases left out
+type SkippedAlias struct {
+	Name       string
+	Reason     AliasSkip
+	PlaylistID string // For AliasTaken, the playlist the tag adds to
+}
+
+// AliasResult describes what AddAliases did
+type AliasResult struct {
+	PlaylistID string         // Playlist the existing tag adds to
+	Added      []string       // Tags created, in the order given
+	Skipped    []SkippedAlias // Names left out, in the order given
+}
+
+// AddAliases creates tags pointing to the same playlist as an existing tag, or as the default playlist
+// for DefaultName. Names that are already tags or aren't valid (see ValidateNewName) are skipped; repeats
+// are ignored. Names must already be normalized: lowercase, without the prefix.
+// All the new tags are saved in one write, so either all of them are added or none are.
+func (s *Store) AddAliases(existing string, names []string) (AliasResult, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	current := s.Config()
+	var result AliasResult
+	if existing == DefaultName {
+		result.PlaylistID = current.DefaultPlaylistID
+	} else if id, ok := current.Tags[existing]; ok {
+		result.PlaylistID = id
+	} else {
+		return result, fmt.Errorf("there's no %s%s tag", current.Prefix, existing)
+	}
+
+	tags := maps.Clone(current.Tags)
+	seen := make(map[string]bool, len(names))
+	for _, name := range names {
+		if seen[name] {
+			continue
+		}
+		seen[name] = true
+		skip := SkippedAlias{Name: name}
+		switch id, exists := tags[name]; {
+		case name == DefaultName:
+			skip.Reason = AliasReserved
+		case ValidateName(name) != nil:
+			skip.Reason = AliasInvalid
+		case id == result.PlaylistID:
+			skip.Reason = AliasExists
+		case exists:
+			skip.Reason, skip.PlaylistID = AliasTaken, id
+		case ValidateNewName(name) != nil:
+			skip.Reason = AliasTooLong
+		default:
+			tags[name] = result.PlaylistID
+			result.Added = append(result.Added, name)
+			continue
+		}
+		result.Skipped = append(result.Skipped, skip)
+	}
+	if len(result.Added) == 0 {
+		return result, nil
+	}
+	if err := s.update(current, tags); err != nil {
+		return AliasResult{}, err
+	}
+	return result, nil
 }
 
 // Remove deletes a tag and returns the playlist it pointed to
@@ -582,7 +665,9 @@ func (c *Config) withTags(tags map[string]string) (*Config, error) {
 	return New(c.Prefix, c.DefaultPlaylistID, tags, c.ReplyUnknown)
 }
 
-// ValidateName checks that a tag name (without the prefix) is lowercase, valid, and not reserved
+// ValidateName checks that a tag name (without the prefix) is lowercase, valid, and not reserved.
+// It doesn't limit the length, so names saved before MaxNameLength existed still load and can be
+// removed; see ValidateNewName.
 func ValidateName(name string) error {
 	if !nameRegex.MatchString(name) || name != strings.ToLower(name) {
 		return fmt.Errorf("invalid tag name %q: use letters and numbers, optionally joined by a single - or _", name)
@@ -591,6 +676,35 @@ func ValidateName(name string) error {
 		return fmt.Errorf("%q is reserved for the default playlist", DefaultName)
 	}
 	return nil
+}
+
+// ValidateNewName is ValidateName for a tag being created, which must also be at most MaxNameLength long
+func ValidateNewName(name string) error {
+	if err := ValidateName(name); err != nil {
+		return err
+	}
+	if NameLength(name) > MaxNameLength {
+		return fmt.Errorf("tag name %q is too long: use at most %d characters", name, MaxNameLength)
+	}
+	return nil
+}
+
+// NameLength returns the length of a name as Discord counts it, in UTF-16 code units,
+// so a letter outside the Basic Multilingual Plane (e.g. 𝐚) counts as 2
+func NameLength(name string) int {
+	return len(utf16.Encode([]rune(name)))
+}
+
+// longNames returns the tags longer than MaxNameLength, sorted. They were saved before the limit existed.
+func longNames(tags map[string]string) []string {
+	var long []string
+	for name := range tags {
+		if NameLength(name) > MaxNameLength {
+			long = append(long, name)
+		}
+	}
+	slices.Sort(long)
+	return long
 }
 
 // ParsePlaylistID extracts the playlist ID from a Spotify playlist link, URI, or bare ID.

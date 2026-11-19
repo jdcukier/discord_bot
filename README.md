@@ -36,11 +36,12 @@ Tags are managed in Discord with slash commands, and changes apply immediately:
 | `/tag add tag:relax playlist:<link>` | Creates `!relax` (and `+relax`) for the playlist. If the tag already exists, nothing changes. |
 | `/tag set tag:relax playlist:<link>` | Changes which playlist `!relax` adds to, creating the tag if it doesn't exist. |
 | `/tag remove tag:relax` | Deletes the tag. Songs tagged with it go to the default playlist. |
+| `/tag alias tag:relax new:chill lofi` | Creates `!chill` and `!lofi` for the same playlist as `!relax` (`tag:default` for the default playlist). Separate up to 10 names with spaces or commas. Tags that already exist are skipped, never moved: use `/tag set` to move one. |
 
 - **Playlist links:** in Spotify, use **Share → Copy link to playlist**. The playlist must be collaborative so everyone's songs can be added. Spotify-made playlists (IDs starting with `37i9dQZF1`) are rejected because nobody can add to them.
-- **Tag names:** letters and numbers, optionally joined by single `-` or `_` (`lo-fi`, `road_trip`). They're case-insensitive, and the `!` or `+` is optional when typing them in a command.
+- **Tag names:** letters and numbers, optionally joined by single `-` or `_` (`lo-fi`, `road_trip`), up to 50 characters. They're case-insensitive, and the `!` or `+` is optional when typing them in a command.
 - **`default` is reserved:** it always means the playlist in `SPOTIFY_PLAYLIST_ID`.
-- **Aliases:** several tags can point to the same playlist (e.g. `!relax` and `!relaxing`). `/tags` lists them together.
+- **Aliases:** several tags can point to the same playlist (e.g. `!relax` and `!relaxing`). `/tags` lists them together, and `/tag alias` adds them without the playlist link.
 - **Changes are public:** `/tag` replies in the channel, so everyone sees what changed.
 - **Who can use them:** anyone in the server, by default. Server admins can limit `/tag` to certain roles under **Server Settings → Integrations → (the bot) → Commands**.
 

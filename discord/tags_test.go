@@ -184,6 +184,174 @@ func TestRemoveTag(t *testing.T) {
 	assert.Empty(t, store.Config().Tags)
 }
 
+func TestAliasTag(t *testing.T) {
+	const lateTestID = "LATE000000000000000000"
+	store := newTestTagStore(t, map[string][]string{
+		"gym": {gymTestID}, "workout": {gymTestID}, "chill": {lateTestID}, "relax": {lateTestID}, "zen": {chillTestID},
+	})
+	require.NoError(t, store.SetPlaylistName(gymTestID, "Gym Bangers"))
+	require.NoError(t, store.SetPlaylistName(lateTestID, "Late *Night*"))
+
+	// Names are split on spaces and commas, with optional prefixes, ignoring case and repeats.
+	// Skipped names are grouped by reason, in the order given.
+	reply := aliasTag(store, "!GYM", " +Lifting, !cardio,,chill\tworkout zen relax a.b default lifting LIFTING ")
+	assert.False(t, reply.private)
+	assert.Equal(t, "✅ **Added aliases for `!gym`**\n"+
+		"🎧 **[Gym Bangers]"+testPlaylistTarget(gymTestID)+"** — **`cardio`**, `gym`, **`lifting`**, `workout`\n"+
+		"-# Skipped `chill`, `relax` (already on Late \\*Night\\*, use /tag set to move them) · "+
+		"Skipped `workout` (already an alias) · "+
+		"Skipped `zen` (already on Untitled playlist, use /tag set to move it) · "+
+		"Skipped `a.b` (invalid name) · "+
+		"Skipped `default` (reserved for the default playlist)", reply.content)
+	assert.Equal(t, gymTestID, reply.playlistID)
+	assert.Equal(t, map[string]string{
+		"gym": gymTestID, "workout": gymTestID, "lifting": gymTestID, "cardio": gymTestID,
+		"chill": lateTestID, "relax": lateTestID, "zen": chillTestID,
+	}, store.Config().Tags)
+
+	// Nothing to add: a private reply with the reasons
+	reply = aliasTag(store, "gym", "lifting cardio chill bad`name")
+	assert.True(t, reply.private)
+	assert.Equal(t, "No tags added to `!gym`'s playlist:\n"+
+		"- Skipped `lifting`, `cardio` (already aliases)\n"+
+		"- Skipped `chill` (already on Late \\*Night\\*, use /tag set to move it)\n"+
+		"- Skipped `badname` (invalid name)", reply.content)
+	assert.Empty(t, reply.playlistID)
+
+	// Without skipped names, there's no subtext
+	reply = aliasTag(store, "workout", "fitness")
+	assert.Equal(t, "✅ **Added aliases for `!workout`**\n"+
+		"🎧 **[Gym Bangers]"+testPlaylistTarget(gymTestID)+"** — `cardio`, **`fitness`**, `gym`, `lifting`, `workout`", reply.content)
+}
+
+func TestAliasTagDefault(t *testing.T) {
+	store := newTestTagStore(t, map[string][]string{"gym": {gymTestID}})
+	reply := aliasTag(store, "+Default", "main, everything gym")
+	assert.False(t, reply.private)
+	assert.Equal(t, "✅ **Added aliases for `!default`**\n"+
+		"🎧 **[Default playlist]"+testPlaylistTarget(defaultTestID)+"** — `default`, **`everything`**, **`main`**\n"+
+		"-# Skipped `gym` (already on Untitled playlist, use /tag set to move it)", reply.content)
+	assert.Equal(t, defaultTestID, reply.playlistID)
+
+	// The default playlist's tags are aliases of default
+	reply = aliasTag(store, "default", "main")
+	assert.Equal(t, "No tags added to `!default`'s playlist:\n- Skipped `main` (already an alias)", reply.content)
+
+	// Other playlists on the default one are shown with their /tags label
+	reply = aliasTag(store, "gym", "main")
+	assert.Equal(t, "No tags added to `!gym`'s playlist:\n"+
+		"- Skipped `main` (already on Default playlist, use /tag set to move it)", reply.content)
+}
+
+func TestAliasTagErrors(t *testing.T) {
+	store := newTestTagStore(t, map[string][]string{"gym": {gymTestID}})
+	for _, tc := range []struct{ existing, names, want string }{
+		{"gymm", "lifting", "Couldn't add the tags: there's no !gymm tag"},
+		{"gym", " , ,, ", "Couldn't add the tags: list at least one new tag name."},
+		{"gym", "! +", "Couldn't add the tags: list at least one new tag name."},
+		{"gym", "a b c d e f g h i j k", "Couldn't add the tags: add at most 10 at once."},
+	} {
+		reply := aliasTag(store, tc.existing, tc.names)
+		assert.True(t, reply.private, tc)
+		assert.Equal(t, tc.want, reply.content, tc)
+	}
+	assert.Equal(t, map[string]string{"gym": gymTestID}, store.Config().Tags)
+
+	// Up to 10 names work, counting repeats once
+	reply := aliasTag(store, "gym", "a b c d e f g h i j A !a +j")
+	assert.False(t, reply.private)
+	assert.Len(t, store.Config().Tags, 11)
+}
+
+func TestAliasTagNameLength(t *testing.T) {
+	store := newTestTagStore(t, map[string][]string{"gym": {gymTestID}})
+	longest := strings.Repeat("a", trigger.MaxNameLength)
+	reply := aliasTag(store, "gym", longest+" "+strings.Repeat("b", 150)+" "+strings.Repeat("c", 51))
+	assert.False(t, reply.private)
+	// Long names are cut in the reply
+	cut := "`" + strings.Repeat("b", trigger.MaxNameLength) + "…`, `" + strings.Repeat("c", trigger.MaxNameLength) + "…`"
+	assert.Equal(t, "✅ **Added aliases for `!gym`**\n"+
+		"🎧 **[Untitled playlist]"+testPlaylistTarget(gymTestID)+"** — **`"+longest+"`**, `gym`\n"+
+		"-# Skipped "+cut+" (longer than 50 characters)", reply.content)
+	assert.Equal(t, map[string]string{"gym": gymTestID, longest: gymTestID}, store.Config().Tags)
+
+	// Length is counted like Discord does, so 26 letters outside the Basic Multilingual Plane are too long.
+	// Names that are too long and also invalid are just invalid.
+	wide := strings.Repeat("\U0001D41A", 26)
+	invalid := strings.Repeat("ab.", 30)
+	reply = aliasTag(store, "gym", wide+" "+invalid)
+	assert.True(t, reply.private)
+	assert.Equal(t, "No tags added to `!gym`'s playlist:\n"+
+		"- Skipped `"+wide+"` (longer than 50 characters)\n"+
+		"- Skipped `"+invalid[:trigger.MaxNameLength]+"…` (invalid name)", reply.content)
+}
+
+func TestAliasTagBlankNames(t *testing.T) {
+	store := newTestTagStore(t, map[string][]string{"gym": {gymTestID}})
+	// Names made only of backticks have nothing left to show in a code span
+	reply := aliasTag(store, "gym", "` `` a`b "+strings.Repeat("`", 60))
+	assert.True(t, reply.private)
+	assert.Equal(t, "No tags added to `!gym`'s playlist:\n- Skipped (blank), `ab` (invalid names)", reply.content)
+}
+
+func TestAliasTagPrivateReplyFits(t *testing.T) {
+	// 10 names taken by 10 playlists with names that escape to 200 bytes
+	playlists := map[string][]string{"gym": {gymTestID}}
+	var names []string
+	for i := range 10 {
+		name := fmt.Sprintf("tag%d", i)
+		playlists[name] = []string{fmt.Sprintf("OTHER%017d", i)}
+		names = append(names, name)
+	}
+	store := newTestTagStore(t, playlists)
+	for i := range 10 {
+		require.NoError(t, store.SetPlaylistName(fmt.Sprintf("OTHER%017d", i), strings.Repeat("*", 100)))
+	}
+	reply := aliasTag(store, "gym", strings.Join(names, " "))
+	assert.True(t, reply.private)
+	assert.LessOrEqual(t, len(reply.content), maxMessageLength)
+	// Whole lines are left out, marked with an ellipsis
+	lines := strings.Split(reply.content, "\n")
+	assert.Equal(t, "No tags added to `!gym`'s playlist:", lines[0])
+	assert.Equal(t, "- …", lines[len(lines)-1])
+	assert.Greater(t, len(lines), 3)
+	for _, line := range lines[1 : len(lines)-1] {
+		assert.True(t, strings.HasPrefix(line, "- Skipped `tag"), line)
+		assert.True(t, strings.HasSuffix(line, ", use /tag set to move it)"), line)
+	}
+}
+
+func TestAliasTagKeepsNewTagsOverSubtext(t *testing.T) {
+	// A playlist with a long name gets 5 long aliases, while 3 names on playlists with long names are
+	// skipped. Their subtext parts nearly fill the room left after 600 bytes for the playlist line,
+	// which is less than the line needs to keep the new tags.
+	note := string(rune(0x1F3B5))
+	emoji, takenName := strings.Repeat(note, 100), strings.Repeat(note, 97)
+	playlists := map[string][]string{"gym": {gymTestID}}
+	for i := range 3 {
+		playlists[fmt.Sprintf("taken%d", i)] = []string{fmt.Sprintf("OTHER%017d", i)}
+	}
+	store := newTestTagStore(t, playlists)
+	require.NoError(t, store.SetPlaylistName(gymTestID, emoji))
+	for i := range 3 {
+		require.NoError(t, store.SetPlaylistName(fmt.Sprintf("OTHER%017d", i), takenName))
+	}
+	var aliases []string
+	for i := range 5 {
+		aliases = append(aliases, fmt.Sprintf("new-alias-number-%010d", i))
+	}
+	reply := aliasTag(store, "gym", strings.Join(aliases, " ")+" taken0 taken1 taken2")
+	assert.False(t, reply.private)
+	assert.LessOrEqual(t, len(reply.content), maxMessageLength)
+	lines := strings.Split(reply.content, "\n")
+	require.Len(t, lines, 3)
+	for _, alias := range aliases {
+		assert.Contains(t, lines[1], "**`"+alias+"`**")
+	}
+	// The subtext was cut instead
+	assert.True(t, strings.HasSuffix(lines[2], " · …"), lines[2])
+}
+
 func TestTagChangeReplyFitsInAMessage(t *testing.T) {
 	many := map[string][]string{}
 	for i := range 80 {
@@ -195,13 +363,70 @@ func TestTagChangeReplyFitsInAMessage(t *testing.T) {
 	lines := strings.Split(reply.content, "\n")
 	require.Len(t, lines, 3)
 	assert.Equal(t, "✅ **Added `!zzz`**", lines[0])
-	// The last tags are left out whole, keeping the header and subtext
+	// The last tags are left out whole, except the bolded one, keeping the header and subtext
 	assert.True(t, strings.HasPrefix(lines[1], "🎧 **[Untitled playlist]"+testPlaylistTarget(gymTestID)+"** — `a-rather-long-tag-name-number-00`, "))
-	assert.True(t, strings.HasSuffix(lines[1], "`, …"), lines[1])
+	assert.True(t, strings.HasSuffix(lines[1], "`, …, **`zzz`**"), lines[1])
 	assert.Equal(t, "-# `+zzz` also adds to the default", lines[2])
+}
 
-	// Without room for a single tag, the line is cut
-	assert.Equal(t, "🎧 **[A]…", fitPlaylistLine("🎧 **[A](<https://open.spotify.com/playlist/x>)** — `a`, `b`", 13))
+func TestFitPlaylistLine(t *testing.T) {
+	c := newTestTagStore(t, nil).Config()
+	link := "🎧 **[A]" + testPlaylistTarget(gymTestID) + "** — "
+	tags := []string{"aa", "bb", "cc", "dd"}
+	bold := []string{"bb", "dd"}
+	full := link + "`aa`, **`bb`**, `cc`, **`dd`**"
+	assert.Equal(t, full, fitPlaylistLine(c, gymTestID, "A", tags, bold, len(full)))
+	// Unbolded tags go first, from the end, each run shown as one ellipsis
+	assert.Equal(t, link+"`aa`, **`bb`**, …, **`dd`**", fitPlaylistLine(c, gymTestID, "A", tags, bold, len(full)-1))
+	assert.Equal(t, link+"…, **`bb`**, …, **`dd`**", fitPlaylistLine(c, gymTestID, "A", tags, bold, len(full)-2))
+	// Then bolded ones, from the end
+	assert.Equal(t, link+"…, **`bb`**, …", fitPlaylistLine(c, gymTestID, "A", tags, bold, len(full)-3))
+	assert.Equal(t, link+"…", fitPlaylistLine(c, gymTestID, "A", tags, bold, len(link)+17))
+
+	// Without room for the link, the line is a bare ellipsis, so no markdown is left open
+	assert.Equal(t, "🎧 …", fitPlaylistLine(c, gymTestID, "A", tags, nil, 13))
+	assert.Equal(t, "🎧 …", fitPlaylistLine(c, gymTestID, "A", nil, nil, 13))
+	assert.Empty(t, fitPlaylistLine(c, gymTestID, "A", tags, nil, 2))
+	assert.Empty(t, fitPlaylistLine(c, gymTestID, "A", tags, nil, -5))
+}
+
+func TestTagChangeReplyLongHeaderAndSubtext(t *testing.T) {
+	store := newTestTagStore(t, map[string][]string{"gym": {gymTestID}, "zzz": {gymTestID}})
+	c := store.Config()
+	line := "🎧 **[A]" + testPlaylistTarget(gymTestID) + "** — `gym`, **`zzz`**"
+
+	// Headers of any length never panic, and the reply always fits
+	for n := 1900; n <= 2100; n++ {
+		reply := tagChangeReply(c, strings.Repeat("h", n), gymTestID, "A", []string{"zzz"}, "sub")
+		assert.LessOrEqual(t, len(reply), maxMessageLength, n)
+		assert.True(t, utf8.ValidString(reply), n)
+	}
+
+	// Long subtext is cut by whole parts so the playlist line keeps its room
+	long := strings.Repeat("s", 1000)
+	reply := tagChangeReply(c, "header", gymTestID, "A", []string{"zzz"}, "first", long, long, "last")
+	assert.Equal(t, "header\n"+line+"\n-# first · "+long+" · …", reply)
+
+	// A single part that doesn't fit is dropped
+	reply = tagChangeReply(c, "header", gymTestID, "A", []string{"zzz"}, strings.Repeat("s", 1990))
+	assert.Equal(t, "header\n"+line, reply)
+
+	// A long playlist line keeps its minimum room before the subtext, then gets what's left
+	many := map[string][]string{}
+	for i := range 80 {
+		many[fmt.Sprintf("a-rather-long-tag-name-number-%02d", i)] = []string{gymTestID}
+	}
+	manyConfig := newTestTagStore(t, many).Config()
+	reply = tagChangeReply(manyConfig, "header", gymTestID, "A", nil, "first", long, long, "last")
+	lines := strings.Split(reply, "\n")
+	require.Len(t, lines, 3)
+	assert.LessOrEqual(t, len(reply), maxMessageLength)
+	assert.GreaterOrEqual(t, len(lines[1]), minPlaylistLineLength-50) // Less up to one tag
+	assert.Equal(t, "-# first · "+long+" · …", lines[2])
+
+	// Bold names not on the playlist are ignored
+	reply = tagChangeReply(c, "header", gymTestID, "A", []string{"other"})
+	assert.Equal(t, "header\n🎧 **[A]"+testPlaylistTarget(gymTestID)+"** — `gym`, `zzz`", reply)
 }
 
 // testNames returns playlist names from a map, and "" for unknown playlists
@@ -229,6 +454,7 @@ func TestListTagsEmpty(t *testing.T) {
 		"> `/tag add` — create a tag",
 		"> `/tag set` — create a tag or change its playlist",
 		"> `/tag remove` — delete a tag",
+		"> `/tag alias` — add more tags to a tag's playlist",
 	}, "\n"), chunks[0])
 }
 
@@ -432,7 +658,8 @@ func TestListTagsSplitsLongLists(t *testing.T) {
 	assert.Contains(t, chunks[0], "> **How to tag**\n> `<song link> !a-very-long-tag-name-for-testing-0`")
 	assert.Contains(t, chunks[0], "> No tag → default playlist")
 	assert.True(t, strings.HasSuffix(chunks[len(chunks)-1], "> **Manage**\n> `/tag add` — create a tag\n"+
-		"> `/tag set` — create a tag or change its playlist\n> `/tag remove` — delete a tag"))
+		"> `/tag set` — create a tag or change its playlist\n> `/tag remove` — delete a tag\n"+
+		"> `/tag alias` — add more tags to a tag's playlist"))
 	// Every playlist is listed once, sorted by name
 	all := strings.Join(chunks, "\n")
 	assert.Equal(t, 43, strings.Count(all, "🎧 "))
@@ -445,7 +672,7 @@ func TestAutocompleteTags(t *testing.T) {
 	})
 	names := func(typed string) []string {
 		var out []string
-		for _, c := range autocompleteTags(store.Config(), typed) {
+		for _, c := range autocompleteTags(store.Config(), typed, false) {
 			out = append(out, c.Value.(string))
 		}
 		return out
@@ -454,8 +681,26 @@ func TestAutocompleteTags(t *testing.T) {
 	assert.Equal(t, []string{"chill-gym", "gym"}, names("!GY"))
 	assert.Equal(t, []string{"chill-gym", "gym"}, names("+gy"))
 	// Never nil: Discord requires the choices field
-	assert.NotNil(t, autocompleteTags(store.Config(), "zzz"))
+	assert.NotNil(t, autocompleteTags(store.Config(), "zzz", false))
 	assert.Empty(t, names("zzz"))
+
+	// /tag alias also suggests default, sorted with the other tags
+	var aliasNames []string
+	for _, c := range autocompleteTags(store.Config(), "", true) {
+		aliasNames = append(aliasNames, c.Value.(string))
+	}
+	assert.Equal(t, []string{"chill", "chill-gym", "default", "gym"}, aliasNames)
+	choices := autocompleteTags(store.Config(), "!DEF", true)
+	require.Len(t, choices, 1)
+	assert.Equal(t, "!default", choices[0].Name)
+	assert.Equal(t, "default", choices[0].Value)
+
+	// Names too long for a choice are left out, so one can't break autocomplete
+	tooLong := strings.Repeat("a", maxChoiceLength)
+	c := &trigger.Config{Prefix: "!", Tags: map[string]string{tooLong: gymTestID, tooLong[1:]: gymTestID}}
+	choices = autocompleteTags(c, "", false)
+	require.Len(t, choices, 1)
+	assert.Equal(t, "!"+tooLong[1:], choices[0].Name)
 }
 
 func TestTagCommandsDefinitions(t *testing.T) {
@@ -492,4 +737,11 @@ func TestTruncate(t *testing.T) {
 	got := truncate(strings.Repeat("é", 10), 9)
 	assert.LessOrEqual(t, len(got), 9)
 	assert.Equal(t, "ééé…", got)
+
+	// Without room for the ellipsis, the cut isn't marked
+	for limit := -1; limit < len("…"); limit++ {
+		assert.NotPanics(t, func() { got = truncate("abcdef", limit) })
+		assert.Equal(t, "abcdef"[:max(limit, 0)], got)
+	}
+	assert.Equal(t, "", truncate("éé", 1))
 }
