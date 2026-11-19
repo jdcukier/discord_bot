@@ -225,8 +225,9 @@ func loadPlaylistTags() (discord.TriggerSource, discord.TagStore) {
 	logDroppedPlaylists(store.Config(), result.Dropped)
 	logStoreMigration(path, result)
 	for _, name := range result.LongNames {
-		logger.Warn(fmt.Sprintf("Playlist tag is longer than %d characters; it still works, but /tag can't change or remove it",
-			trigger.MaxNameLength), zap.String(zapkey.Name, settings.Prefix+name))
+		logger.Warn(fmt.Sprintf("Playlist tag is longer than %d characters; it still works, but /tag can't change or remove it. "+
+			"To rename or remove it, stop the bot and edit the tags file, since edits made while it runs are lost",
+			trigger.MaxNameLength), zap.String(zapkey.Name, settings.Prefix+name), zap.String(zapkey.Path, path))
 	}
 	switch {
 	case result.Created && len(seed) > 0:

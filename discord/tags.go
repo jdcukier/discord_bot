@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strings"
 	"unicode"
+	"unicode/utf16"
 	"unicode/utf8"
 
 	"github.com/bwmarrin/discordgo"
@@ -698,14 +699,22 @@ func skippedAliases(c *trigger.Config, skipped []trigger.SkippedAlias, name func
 }
 
 // skippedAliasName formats a name /tag alias left out as code. Invalid names are shown as typed,
-// so backticks, which would end the code span, are dropped, and names too long to be tags are cut.
+// so backticks, which would end the code span, are dropped, and names too long to be tags are cut
+// to MaxNameLength, counted like Discord does (see trigger.NameLength), without splitting a character.
 func skippedAliasName(name string) string {
 	name = strings.ReplaceAll(name, "`", "")
 	if name == "" {
 		return "(blank)"
 	}
-	if runes := []rune(name); len(runes) > trigger.MaxNameLength {
-		name = string(runes[:trigger.MaxNameLength]) + "…"
+	if trigger.NameLength(name) > trigger.MaxNameLength {
+		units, cut := 0, 0
+		for i, r := range name {
+			if units += utf16.RuneLen(r); units > trigger.MaxNameLength {
+				cut = i
+				break
+			}
+		}
+		name = name[:cut] + "…"
 	}
 	return "`" + name + "`"
 }
@@ -729,9 +738,11 @@ func autocompleteTags(c *trigger.Config, typed string, withDefault bool) []*disc
 	slices.Sort(names)
 	choices := []*discordgo.ApplicationCommandOptionChoice{}
 	for _, name := range names {
-		// Discord rejects choices over 100 characters. Tag names are shorter, but this keeps
-		// one bad tag from breaking autocomplete for everyone.
-		if !strings.Contains(name, typed) || trigger.NameLength(c.Prefix+name) > maxChoiceLength {
+		// Tags saved before the length limit can't be submitted, since the tag option is limited to
+		// MaxNameLength, and Discord rejects choices over 100 characters, so one bad tag could break
+		// autocomplete for everyone
+		if !strings.Contains(name, typed) || trigger.NameLength(name) > trigger.MaxNameLength ||
+			trigger.NameLength(c.Prefix+name) > maxChoiceLength {
 			continue
 		}
 		choices = append(choices, &discordgo.ApplicationCommandOptionChoice{Name: c.Prefix + name, Value: name})

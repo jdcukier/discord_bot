@@ -282,7 +282,7 @@ func TestAliasTagNameLength(t *testing.T) {
 	reply = aliasTag(store, "gym", wide+" "+invalid)
 	assert.True(t, reply.private)
 	assert.Equal(t, "No tags added to `!gym`'s playlist:\n"+
-		"- Skipped `"+wide+"` (longer than 50 characters)\n"+
+		"- Skipped `"+strings.Repeat("\U0001D41A", 25)+"…` (longer than 50 characters)\n"+
 		"- Skipped `"+invalid[:trigger.MaxNameLength]+"…` (invalid name)", reply.content)
 }
 
@@ -706,11 +706,39 @@ func TestAutocompleteTags(t *testing.T) {
 	assert.Equal(t, "default", choices[0].Value)
 
 	// Names too long for a choice are left out, so one can't break autocomplete
-	tooLong := strings.Repeat("a", maxChoiceLength)
-	c := &trigger.Config{Prefix: "!", Tags: map[string]string{tooLong: gymTestID, tooLong[1:]: gymTestID}}
+	// (with a long prefix, since the tags themselves are limited to 50 characters below)
+	prefix := strings.Repeat("!", maxChoiceLength-trigger.MaxNameLength+1)
+	tooLong := strings.Repeat("a", trigger.MaxNameLength)
+	c := &trigger.Config{Prefix: prefix, Tags: map[string]string{tooLong: gymTestID, tooLong[1:]: gymTestID}}
 	choices = autocompleteTags(c, "", false)
 	require.Len(t, choices, 1)
-	assert.Equal(t, "!"+tooLong[1:], choices[0].Name)
+	assert.Equal(t, prefix+tooLong[1:], choices[0].Name)
+
+	// So are tags too long to submit, saved before the limit, counted like Discord does
+	c = &trigger.Config{Prefix: "!", Tags: map[string]string{
+		strings.Repeat("a", trigger.MaxNameLength):   gymTestID,
+		strings.Repeat("b", trigger.MaxNameLength+1): gymTestID,
+		strings.Repeat("\U0001D41A", 25):             gymTestID,
+		strings.Repeat("\U0001D41A", 26):             gymTestID,
+	}}
+	var values []string
+	for _, choice := range autocompleteTags(c, "", false) {
+		values = append(values, choice.Value.(string))
+	}
+	assert.Equal(t, []string{strings.Repeat("a", trigger.MaxNameLength), strings.Repeat("\U0001D41A", 25)}, values)
+}
+
+func TestSkippedAliasName(t *testing.T) {
+	assert.Equal(t, "`gym`", skippedAliasName("g`ym"))
+	assert.Equal(t, "(blank)", skippedAliasName("``"))
+	fits := strings.Repeat("a", trigger.MaxNameLength)
+	assert.Equal(t, "`"+fits+"`", skippedAliasName(fits))
+	assert.Equal(t, "`"+fits+"…`", skippedAliasName(fits+"b"))
+	// Cut by UTF-16 code units, like Discord counts, on a character boundary
+	wide := "\U0001D41A"
+	assert.Equal(t, "`"+strings.Repeat(wide, 25)+"`", skippedAliasName(strings.Repeat(wide, 25)))
+	assert.Equal(t, "`"+strings.Repeat(wide, 25)+"…`", skippedAliasName(strings.Repeat(wide, 26)))
+	assert.Equal(t, "`a"+strings.Repeat(wide, 24)+"…`", skippedAliasName("a"+strings.Repeat(wide, 25)))
 }
 
 func TestTagCommandsDefinitions(t *testing.T) {
