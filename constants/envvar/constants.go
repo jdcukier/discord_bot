@@ -48,6 +48,7 @@ const (
 	SpotifyPlaylistTriggers     = "SPOTIFY_PLAYLIST_TRIGGERS"
 	SpotifyTriggerPrefix        = "SPOTIFY_TRIGGER_PREFIX"
 	SpotifyReplyUnknownTriggers = "SPOTIFY_REPLY_UNKNOWN_TRIGGERS"
+	SpotifyTagsFile             = "SPOTIFY_TAGS_FILE"
 )
 
 // Cloudflare worker access

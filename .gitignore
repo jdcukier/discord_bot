@@ -28,6 +28,9 @@ go.work.sum
 # env file
 .env
 
+# Playlist tags saved by the bot when run outside Docker
+playlist-tags.json
+
 # ========================
 # Python
 # ========================

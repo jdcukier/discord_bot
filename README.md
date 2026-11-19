@@ -24,49 +24,35 @@ https://open.spotify.com/track/4PTG3Z6ehGkBFwjybzWkR8 !relaxing
 - **Links only:** tags in a message without a Spotify link do nothing.
 - **Permissions:** songs are added with the poster's own Spotify account, so every tagged playlist must be collaborative, or otherwise editable by everyone who posts.
 
-## Configuring tags
+## Managing tags
 
-Tags are set in the `SPOTIFY_PLAYLIST_TRIGGERS` repository secret (in `.env` when running locally). It's a single line:
+Tags are managed in Discord with slash commands, and changes apply immediately:
 
-```
-tag=playlistID[,playlistID...];tag=playlistID
-```
-
-- **Tag names:** letters and numbers, optionally joined by single `-` or `_` (`lo-fi`, `road_trip`). They're case-insensitive and written without the `!`.
-- **`default` is reserved:** it always means the playlist in `SPOTIFY_PLAYLIST_ID`. Putting `default=` in the secret makes the config invalid.
-- **Sharing:** one tag can point to several playlists, and several tags can point to the same playlist. Each tag needs its own entry.
-- **Invalid values don't break the bot:** if the value is invalid, the bot logs the error at startup and ignores all tags until it's fixed, so every song goes to the default playlist.
-
-### Finding a playlist ID
-
-In Spotify, use **Share → Copy link to playlist**. The ID is the part between `/playlist/` and `?`:
-
-```
-https://open.spotify.com/playlist/37i9dQZF1DXcBWIGoYBM5M?si=abc123
-                                  └──────── ID ────────┘
-```
-
-### Example
-
-```
-relax=<RELAX_ID>;relaxing=<RELAX_ID>;relaxtoo=<DEFAULT_ID>,<RELAX_ID>
-```
-
-| Tag | Adds to |
+| Command | What it does |
 | --- | --- |
-| `!relax`, `!relaxing` | The relax playlist |
-| `!relaxtoo` | The default playlist and the relax playlist |
-| `!default` | The default playlist (built in) |
+| `/tags` | Lists every tag and its playlists. Only you see the reply. |
+| `/tag add tag:gym playlist:<link>` | Makes `!gym` add songs to the playlist, creating the tag if it's new. Run it again with another link to make one tag add to several playlists. |
+| `/tag remove tag:gym playlist:<link>` | Stops `!gym` adding to that playlist. The tag is deleted when its last playlist is removed. |
+| `/tag remove tag:gym` | Deletes `!gym`. Songs tagged with it go to the default playlist. |
 
-A tag that should also add to the default playlist just lists the default playlist's ID, i.e. the value of `SPOTIFY_PLAYLIST_ID`. If the default playlist ever changes, update those tags too.
+- **Playlist links:** in Spotify, use **Share → Copy link to playlist**. The playlist must be collaborative so everyone's songs can be added. Spotify-made playlists (IDs starting with `37i9dQZF1`) are rejected because nobody can add to them.
+- **Tag names:** letters and numbers, optionally joined by single `-` or `_` (`lo-fi`, `road_trip`). They're case-insensitive, and the `!` is optional when typing them in a command.
+- **`default` is reserved:** it always means the playlist in `SPOTIFY_PLAYLIST_ID`. For a tag that also adds to the default playlist, add the default playlist's link to it.
+- **Sharing:** one tag can add to several playlists, and several tags can add to the same playlist (e.g. `!relax` and `!relaxing` as aliases).
+- **Changes are public:** `/tag` replies in the channel, so everyone sees what changed.
+- **Who can use them:** anyone in the server, by default. Server admins can limit `/tag` to certain roles under **Server Settings → Integrations → (the bot) → Commands**.
 
 **Pick names that say what the tag does.** Generic names like `!both`, `!all` or `!misc` stop making sense once more playlists exist. Names like `!play` or `!help` collide with other bots' commands, and near-duplicates like `!relax`/`!relaxx` are easy to mix up.
 
-### Applying changes
+### Where tags are stored
 
-1. **Edit the secret:** **Settings → Secrets and variables → Actions → `SPOTIFY_PLAYLIST_TRIGGERS`**. Secrets can't be read back, so keep a copy of the full value somewhere: an update replaces the whole thing.
-2. **Redeploy:** open the latest run of the **main** workflow in **Actions** and re-run only the **`release-to-prod / deploy`** job. "Re-run all jobs" would also create a new version tag and release. A run can only be re-run within 30 days; after that, merge any change to `main` to redeploy.
-3. **Check it loaded:** the bot logs should show `Loaded playlist triggers` with the tag list. If they show `Invalid playlist triggers` instead, fix the value and redeploy.
+Playlist IDs aren't committed to this public repo. Tags live in `/data/playlist-tags.json` inside the `discord-bot-data` Docker volume on the server, which survives redeploys. Back it up with:
+
+```sh
+docker cp discord-bot:/data/playlist-tags.json .
+```
+
+The first time the bot starts without that file, it creates it from the `SPOTIFY_PLAYLIST_TRIGGERS` secret (format `tag=playlistID[,playlistID...];tag=playlistID`). After that, the secret is ignored and can be deleted. If the file can't be read or written, the bot logs the error, falls back to the secret's tags, and `/tag` is unavailable until it's fixed. The bot logs `Loaded playlist triggers` with the tag names at startup.
 
 ### Other settings
 
@@ -74,7 +60,4 @@ A tag that should also add to the default playlist just lists the default playli
 | --- | --- | --- |
 | `SPOTIFY_TRIGGER_PREFIX` | `!` | The single symbol that marks a tag. Avoid `$` (Docker Compose treats it as a variable) and `#`/`:` (hashtags and `:emoji:` would look like tags). |
 | `SPOTIFY_REPLY_UNKNOWN_TRIGGERS` | `false` | When `true`, the bot replies `Unknown playlist: !name` when someone uses a tag that isn't configured. |
-
-### Using an AI assistant
-
-The `playlist-tags` skill in `.agents/skills/` builds the secret value for you. Give Claude Code or Codex the playlist links and the tags you want, along with the current secret value, and it returns the exact line to paste.
+| `SPOTIFY_TAGS_FILE` | `playlist-tags.json` | Where tags are saved. `docker-compose.yml` sets it to `/data/playlist-tags.json` on the volume. |

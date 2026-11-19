@@ -9,6 +9,7 @@ import (
 	"github.com/jdcukier/spotify/v2"
 
 	"discordbot/constants/zapkey"
+	"discordbot/log"
 	"discordbot/utils/ctxutil"
 )
 
@@ -52,13 +53,14 @@ func (c *Client) logPlaylistInfo(ctx context.Context, api *spotify.Client, playl
 	// Get playlist
 	pl, err := c.playlist(ctx, api, playlistID)
 	if err != nil {
-		logger.With(zap.Error(err)).Error("Cannot access playlist", fields...)
+		logger.With(zap.Error(log.RedactErr(err, playlistID))).Error("Cannot access playlist", fields...)
 		return
 	}
 
-	// Log playlist info
+	// Log playlist info. Not the whole playlist: it includes the ID, which must stay out of logs.
 	logger.With(
-		zap.Any(zapkey.Data, pl),
 		zap.String(zapkey.PlaylistOwnerID, pl.Owner.ID),
+		zap.Bool(zapkey.Collaborative, pl.Collaborative),
+		zap.Bool(zapkey.Public, pl.IsPublic),
 	).Info("Playlist access verified", fields...)
 }

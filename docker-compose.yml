@@ -7,8 +7,16 @@ services:
     container_name: discord-bot
     restart: unless-stopped
     env_file: .env
+    environment:
+      # Playlist tags managed with /tag; the volume keeps them across redeploys
+      SPOTIFY_TAGS_FILE: /data/playlist-tags.json
+    volumes:
+      - discord-bot-data:/data
     networks:
       - discord-bot-network
+
+volumes:
+  discord-bot-data:
 
 networks:
   discord-bot-network:

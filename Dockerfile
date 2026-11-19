@@ -46,6 +46,10 @@ WORKDIR /app
 # Copy binary from builder stage
 COPY --from=builder /app/main .
 
+# Writable data directory, mounted as a volume so playlist tags survive redeploys.
+# A new named volume copies this directory's ownership.
+RUN mkdir -p /data && chown ${APP_USER}:${APP_USER} /data
+
 # Switch to non-root user
 USER ${APP_USER}
 
