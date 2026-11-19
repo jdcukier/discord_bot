@@ -11,9 +11,12 @@ const link = "https://open.spotify.com/track/6adFsinyuxpOTkN4QmwwOt?si=3f33d5316
 
 func newTestConfig(t *testing.T) *Config {
 	t.Helper()
-	playlists, err := ParsePlaylists("relaxing=relax-id,chill-id; chill=chill-id; Gym=gym-id")
-	require.NoError(t, err)
-	c, err := New(DefaultPrefix, "default-id", playlists, false)
+	c, err := New(DefaultPrefix, "default-id", map[string]string{
+		"relaxing": "relax-id",
+		"relax":    "relax-id",
+		"chill":    "chill-id",
+		"gym":      "gym-id",
+	}, false)
 	require.NoError(t, err)
 	return c
 }
@@ -52,15 +55,15 @@ func TestNewErrors(t *testing.T) {
 	_, err := New("!", "", nil, false)
 	assert.Error(t, err, "empty default playlist")
 
-	_, err = New("!", "default-id", map[string][]string{DefaultName: {"x"}}, false)
+	_, err = New("!", "default-id", map[string]string{DefaultName: "x"}, false)
 	assert.Error(t, err, "reserved name")
 
-	for _, prefix := range []string{"", "!!", "a", "1", " ", "_", "-"} {
+	for _, prefix := range []string{"", "!!", "a", "1", " ", "_", "-", PlusPrefix} {
 		_, err = New(prefix, "default-id", nil, false)
 		assert.Error(t, err, "prefix %q", prefix)
 	}
 
-	for _, prefix := range []string{"!", "$", "+", "&", "#", "."} {
+	for _, prefix := range []string{"!", "$", "&", "#", "."} {
 		_, err = New(prefix, "default-id", nil, false)
 		assert.NoError(t, err, "prefix %q", prefix)
 	}
@@ -68,7 +71,7 @@ func TestNewErrors(t *testing.T) {
 
 func TestLoad(t *testing.T) {
 	t.Setenv("SPOTIFY_PLAYLIST_ID", "default-id")
-	t.Setenv("SPOTIFY_PLAYLIST_TRIGGERS", "relaxing=relax-id")
+	t.Setenv("SPOTIFY_PLAYLIST_TRIGGERS", "relaxing=relax-id;both=default-id,relax-id")
 	t.Setenv("SPOTIFY_TRIGGER_PREFIX", "")
 	t.Setenv("SPOTIFY_REPLY_UNKNOWN_TRIGGERS", "")
 
@@ -76,7 +79,7 @@ func TestLoad(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, DefaultPrefix, c.Prefix)
 	assert.Equal(t, "default-id", c.DefaultPlaylistID)
-	assert.Equal(t, map[string][]string{"relaxing": {"relax-id"}}, c.Playlists)
+	assert.Equal(t, map[string]string{"relaxing": "relax-id", "both": "relax-id"}, c.Tags)
 	assert.False(t, c.ReplyUnknown)
 
 	t.Setenv("SPOTIFY_TRIGGER_PREFIX", "$")
@@ -101,12 +104,12 @@ func TestLoadWithoutTriggers(t *testing.T) {
 	require.NoError(t, err)
 	ids, unknown := c.Resolve(link + " !relaxing")
 	assert.Equal(t, []string{"default-id"}, ids)
-	assert.Equal(t, []string{"relaxing"}, unknown)
+	assert.Equal(t, []string{"!relaxing"}, unknown)
 }
 
 func TestExtract(t *testing.T) {
 	c := newTestConfig(t)
-	tests := map[string][]string{
+	tests := map[string][]string{ // Names of the "!" triggers
 		link:                              nil,
 		link + " you gotta hear this!":    nil,
 		link + " !relaxing":               {"relaxing"},
@@ -142,7 +145,25 @@ func TestExtract(t *testing.T) {
 		link + " !gym_":           {"gym"},
 		link + " !chill--so good": {"chill"},
 	}
-	for content, want := range tests {
+	for content, names := range tests {
+		var want []Trigger
+		for _, name := range names {
+			want = append(want, Trigger{Name: name})
+		}
+		assert.Equal(t, want, c.Extract(content), content)
+	}
+
+	// Plus triggers
+	plus := map[string][]Trigger{
+		link + " +relax":           {{Name: "relax", Plus: true}},
+		link + " **+Relax**":       {{Name: "relax", Plus: true}},
+		link + " +relax !relax":    {{Name: "relax", Plus: true}, {Name: "relax"}},
+		link + " +gym +gym !chill": {{Name: "gym", Plus: true}, {Name: "chill"}},
+		link + " c++ a+b":          nil,
+		link + " ++gym":            nil,
+		link + " +!gym":            nil,
+	}
+	for content, want := range plus {
 		assert.Equal(t, want, c.Extract(content), content)
 	}
 }
@@ -158,11 +179,16 @@ func TestResolve(t *testing.T) {
 		{"link alone", link, []string{"default-id"}, nil},
 		{"non-trigger words", link + " you guys gotta check out this song!", []string{"default-id"}, nil},
 		{"one trigger skips default", link + " !gym", []string{"gym-id"}, nil},
-		{"trigger with multiple playlists", link + " !relaxing", []string{"relax-id", "chill-id"}, nil},
+		{"several triggers", link + " !relaxing !gym", []string{"relax-id", "gym-id"}, nil},
 		{"default plus trigger", link + " !default !gym", []string{"default-id", "gym-id"}, nil},
-		{"shared playlist added once", link + " !relaxing !chill", []string{"relax-id", "chill-id"}, nil},
-		{"unknown only falls back to default", link + " !nope", []string{"default-id"}, []string{"nope"}},
-		{"unknown alongside known", link + " !nope !gym !what", []string{"gym-id"}, []string{"nope", "what"}},
+		{"plus trigger adds default", link + " +gym", []string{"gym-id", "default-id"}, nil},
+		{"plus and plain trigger", link + " +gym !chill", []string{"gym-id", "default-id", "chill-id"}, nil},
+		{"plus default is default", link + " +default", []string{"default-id"}, nil},
+		{"aliases added once", link + " !relaxing !relax", []string{"relax-id"}, nil},
+		{"unknown only falls back to default", link + " !nope", []string{"default-id"}, []string{"!nope"}},
+		{"unknown alongside known", link + " !nope !gym +what", []string{"gym-id"}, []string{"!nope", "+what"}},
+		{"plus numbers aren't reported", link + " +1 !gym", []string{"gym-id"}, nil},
+		{"plain numbers are reported", link + " !1", []string{"default-id"}, []string{"!1"}},
 		{"default keyword is case-insensitive", link + " !DEFAULT", []string{"default-id"}, nil},
 	}
 	for _, tt := range tests {
@@ -175,10 +201,29 @@ func TestResolve(t *testing.T) {
 }
 
 func TestCustomPrefix(t *testing.T) {
-	c, err := New("$", "default-id", map[string][]string{"gym": {"gym-id"}}, false)
+	c, err := New("$", "default-id", map[string]string{"gym": "gym-id"}, false)
 	require.NoError(t, err)
 	ids, _ := c.Resolve(link + " $gym !gym")
 	assert.Equal(t, []string{"gym-id"}, ids)
+	ids, _ = c.Resolve(link + " +gym")
+	assert.Equal(t, []string{"gym-id", "default-id"}, ids)
 	ids, _ = c.Resolve(link + " that was $5")
 	assert.Equal(t, []string{"default-id"}, ids)
+}
+
+func TestToTags(t *testing.T) {
+	tags, changed := ToTags(map[string][]string{
+		"relax":  {"relax-id"},
+		"rehlax": {"default-id", "relax-id"}, // default + one playlist: keeps the other one
+		"multi":  {"a-id", "default-id", "b-id"},
+		"main":   {"default-id"},
+		"empty":  {},
+	}, "default-id")
+	assert.Equal(t, map[string]string{
+		"relax":  "relax-id",
+		"rehlax": "relax-id",
+		"multi":  "a-id",
+		"main":   "default-id",
+	}, tags)
+	assert.Equal(t, []string{"multi", "rehlax"}, changed)
 }

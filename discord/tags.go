@@ -19,7 +19,7 @@ const (
 	tagsCommand = "tags" // Lists the tags
 	tagCommand  = "tag"  // Changes the tags, via the subcommands below
 
-	tagAddSubcommand    = "add"
+	tagSetSubcommand    = "set"
 	tagRemoveSubcommand = "remove"
 
 	tagOption      = "tag"
@@ -32,8 +32,8 @@ const maxMessageLength = 2000
 // TagStore reads and changes the playlist tags
 type TagStore interface {
 	Config() *trigger.Config
-	Add(name, playlistID string) (playlistIDs []string, added bool, err error)
-	Remove(name, playlistID string) (remaining []string, err error)
+	Set(name, playlistID string) (previous string, err error)
+	Remove(name string) (previous string, err error)
 }
 
 // tagCommands returns the slash command definitions for managing tags.
@@ -59,13 +59,13 @@ func tagCommands() []*discordgo.ApplicationCommand {
 		},
 		{
 			Name:        tagCommand,
-			Description: "Change which playlists a tag adds songs to",
+			Description: "Change which playlist a tag adds songs to",
 			Contexts:    guildOnly,
 			Options: []*discordgo.ApplicationCommandOption{
 				{
 					Type:        discordgo.ApplicationCommandOptionSubCommand,
-					Name:        tagAddSubcommand,
-					Description: "Make a tag add songs to a playlist, creating the tag if it's new",
+					Name:        tagSetSubcommand,
+					Description: "Make a tag add songs to a playlist, creating the tag or replacing its playlist",
 					Options: []*discordgo.ApplicationCommandOption{
 						tagName("Tag name, e.g. gym (letters and numbers, optionally joined by - or _)", true),
 						{
@@ -79,14 +79,9 @@ func tagCommands() []*discordgo.ApplicationCommand {
 				{
 					Type:        discordgo.ApplicationCommandOptionSubCommand,
 					Name:        tagRemoveSubcommand,
-					Description: "Stop a tag adding to a playlist, or delete the tag",
+					Description: "Delete a tag",
 					Options: []*discordgo.ApplicationCommandOption{
-						tagName("Tag to change", true),
-						{
-							Type:        discordgo.ApplicationCommandOptionString,
-							Name:        playlistOption,
-							Description: "Playlist link to remove from the tag. Leave empty to delete the whole tag.",
-						},
+						tagName("Tag to delete", true),
 					},
 				},
 			},
@@ -115,72 +110,81 @@ type tagReply struct {
 	private bool // Only shown to the user who ran the command
 }
 
-// listTags formats the tags as messages of at most maxMessageLength characters
+// listTags formats the tags, grouped by playlist, as messages of at most maxMessageLength characters
 func listTags(c *trigger.Config) []string {
+	// Group the tags by playlist, with the default playlist first
+	byPlaylist := map[string][]string{c.DefaultPlaylistID: {trigger.DefaultName}}
+	for _, name := range slices.Sorted(maps.Keys(c.Tags)) {
+		id := c.Tags[name]
+		byPlaylist[id] = append(byPlaylist[id], name)
+	}
+	others := slices.DeleteFunc(slices.Collect(maps.Keys(byPlaylist)), func(id string) bool { return id == c.DefaultPlaylistID })
+	slices.SortFunc(others, func(a, b string) int { return strings.Compare(byPlaylist[a][0], byPlaylist[b][0]) })
+
+	formatTags := func(names []string) string {
+		tags := make([]string, len(names))
+		for i, name := range names {
+			tags[i] = "`" + c.Prefix + name + "`"
+		}
+		return strings.Join(tags, ", ")
+	}
+
 	lines := []string{
-		"**Playlist tags**: add one or more after a song link, e.g. `<link> " + c.Prefix + "gym`. Without a tag, songs go to the default playlist.",
-		fmt.Sprintf("`%s%s` → %s", c.Prefix, trigger.DefaultName, playlistLink(c.DefaultPlaylistID)),
+		fmt.Sprintf("**Playlist tags**: put one after a song link. `%sname` adds the song to that playlist only, "+
+			"`%sname` also adds it to the default playlist. Without a tag, songs go to the default playlist.",
+			c.Prefix, trigger.PlusPrefix),
+		fmt.Sprintf("**Default playlist** %s: %s", playlistLink(c.DefaultPlaylistID), formatTags(byPlaylist[c.DefaultPlaylistID])),
 	}
-	for _, name := range slices.Sorted(maps.Keys(c.Playlists)) {
-		lines = append(lines, fmt.Sprintf("`%s%s` → %s", c.Prefix, name, playlistLinks(c, c.Playlists[name])))
+	for _, id := range others {
+		lines = append(lines, fmt.Sprintf("%s: %s", playlistLink(id), formatTags(byPlaylist[id])))
 	}
-	if len(c.Playlists) == 0 {
-		lines = append(lines, "No other tags yet. Create one with `/tag add`.")
+	if len(c.Tags) == 0 {
+		lines = append(lines, "No other tags yet. Create one with `/tag set`.")
 	}
 	return chunkLines(lines, maxMessageLength)
 }
 
-// addTag handles /tag add
-func addTag(store TagStore, rawName, rawPlaylist string) tagReply {
+// setTag handles /tag set
+func setTag(store TagStore, rawName, rawPlaylist string) tagReply {
 	c := store.Config()
 	name := normalizeTagName(c, rawName)
 	playlistID, err := trigger.ParsePlaylistID(rawPlaylist)
 	if err != nil {
-		return tagReply{content: "Couldn't add the tag: " + err.Error(), private: true}
+		return tagReply{content: "Couldn't set the tag: " + err.Error(), private: true}
 	}
-	ids, added, err := store.Add(name, playlistID)
+	previous, err := store.Set(name, playlistID)
 	if err != nil {
-		return tagReply{content: "Couldn't add the tag: " + err.Error(), private: true}
+		return tagReply{content: "Couldn't set the tag: " + err.Error(), private: true}
 	}
-	tag := "`" + c.Prefix + name + "`"
-	if !added {
-		return tagReply{content: fmt.Sprintf("%s already adds to that playlist.", tag), private: true}
+	if previous == playlistID {
+		return tagReply{content: fmt.Sprintf("`%s%s` already adds to that playlist.", c.Prefix, name), private: true}
 	}
-	msg := fmt.Sprintf("%s now adds songs to %s", tag, playlistLinks(c, ids))
-	if len(ids) == 1 {
+	msg := fmt.Sprintf("`%s%s` now adds songs to %s, and `%s%s` adds them to the default playlist too.",
+		c.Prefix, name, playlistName(c, playlistID), trigger.PlusPrefix, name)
+	if previous != "" {
+		msg += fmt.Sprintf(" It used to add to %s.", playlistName(c, previous))
+	}
+	if playlistID != c.DefaultPlaylistID && !slices.Contains(slices.Collect(maps.Values(c.Tags)), playlistID) {
 		msg += "\nThe playlist must be collaborative, or everyone else's songs can't be added to it."
 	}
 	return tagReply{content: msg}
 }
 
 // removeTag handles /tag remove
-func removeTag(store TagStore, rawName, rawPlaylist string) tagReply {
+func removeTag(store TagStore, rawName string) tagReply {
 	c := store.Config()
 	name := normalizeTagName(c, rawName)
-	var playlistID string
-	if strings.TrimSpace(rawPlaylist) != "" {
-		var err error
-		// Editorial playlists can't be added, but one already in a tag can still be removed
-		if playlistID, err = trigger.ExtractPlaylistID(rawPlaylist); err != nil {
-			return tagReply{content: "Couldn't change the tag: " + err.Error(), private: true}
-		}
+	if _, err := store.Remove(name); err != nil {
+		return tagReply{content: "Couldn't remove the tag: " + err.Error(), private: true}
 	}
-	remaining, err := store.Remove(name, playlistID)
-	if err != nil {
-		return tagReply{content: "Couldn't change the tag: " + err.Error(), private: true}
-	}
-	tag := "`" + c.Prefix + name + "`"
-	if len(remaining) == 0 {
-		return tagReply{content: fmt.Sprintf("Deleted %s. Songs tagged with it now go to the default playlist.", tag)}
-	}
-	return tagReply{content: fmt.Sprintf("%s now adds songs to %s", tag, playlistLinks(c, remaining))}
+	return tagReply{content: fmt.Sprintf("Deleted `%s%s`. Songs tagged with it now go to the default playlist.", c.Prefix, name)}
 }
 
 // autocompleteTags suggests existing tag names that contain what the user has typed
 func autocompleteTags(c *trigger.Config, typed string) []*discordgo.ApplicationCommandOptionChoice {
 	typed = normalizeTagName(c, typed)
 	choices := []*discordgo.ApplicationCommandOptionChoice{}
-	for _, name := range slices.Sorted(maps.Keys(c.Playlists)) {
+	for _, name := range slices.Sorted(maps.Keys(c.Tags)) {
 		if !strings.Contains(name, typed) {
 			continue
 		}
@@ -195,21 +199,20 @@ func autocompleteTags(c *trigger.Config, typed string) []*discordgo.ApplicationC
 // normalizeTagName lowercases a tag name and drops a leading prefix, so "!Gym" means "gym"
 func normalizeTagName(c *trigger.Config, name string) string {
 	name = strings.TrimSpace(name)
-	name = strings.TrimPrefix(name, c.Prefix)
+	if after, ok := strings.CutPrefix(name, c.Prefix); ok {
+		name = after
+	} else {
+		name = strings.TrimPrefix(name, trigger.PlusPrefix)
+	}
 	return strings.ToLower(name)
 }
 
-// playlistLinks formats playlists as a comma-separated list
-func playlistLinks(c *trigger.Config, ids []string) string {
-	links := make([]string, len(ids))
-	for i, id := range ids {
-		if id == c.DefaultPlaylistID {
-			links[i] = "the default playlist"
-		} else {
-			links[i] = playlistLink(id)
-		}
+// playlistName formats a playlist for a reply
+func playlistName(c *trigger.Config, id string) string {
+	if id == c.DefaultPlaylistID {
+		return "the default playlist"
 	}
-	return strings.Join(links, ", ")
+	return playlistLink(id)
 }
 
 // playlistLink formats a playlist link without an embed preview

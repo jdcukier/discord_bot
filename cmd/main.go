@@ -193,11 +193,12 @@ func loadPlaylistTags() (discord.TriggerSource, discord.TagStore) {
 		seed = nil
 	}
 
-	store, created, err := trigger.OpenStore(path, settings, seed)
+	store, result, err := trigger.OpenStore(path, settings, seed)
 	if err != nil {
 		logger.Error("Failed to open the playlist tags file; using "+envvar.SpotifyPlaylistTriggers+" and disabling /tag",
 			zap.String(zapkey.Path, path), zap.Error(err))
-		fallback, err := trigger.New(settings.Prefix, settings.DefaultPlaylistID, seed, settings.ReplyUnknown)
+		tags, _ := trigger.ToTags(seed, settings.DefaultPlaylistID)
+		fallback, err := trigger.New(settings.Prefix, settings.DefaultPlaylistID, tags, settings.ReplyUnknown)
 		if err != nil {
 			logger.Error("Invalid playlist triggers; adding to the default playlist only", zap.Error(err))
 			return nil, nil
@@ -205,10 +206,18 @@ func loadPlaylistTags() (discord.TriggerSource, discord.TagStore) {
 		logTriggers(fallback)
 		return staticTriggers{fallback}, nil
 	}
+	if len(result.Changed) > 0 {
+		var names []string
+		for _, name := range result.Changed {
+			names = append(names, settings.Prefix+name)
+		}
+		logger.Warn("Converted tags with several playlists to one playlist each; use +tag to also add to the default playlist",
+			zap.Strings(zapkey.Triggers, names))
+	}
 	switch {
-	case created && len(seed) > 0:
+	case result.Created && len(seed) > 0:
 		logger.Info("Created the playlist tags file from "+envvar.SpotifyPlaylistTriggers, zap.String(zapkey.Path, path))
-	case created:
+	case result.Created:
 		logger.Info("Created an empty playlist tags file", zap.String(zapkey.Path, path))
 	case os.Getenv(envvar.SpotifyPlaylistTriggers) != "":
 		logger.Info("Using the playlist tags file; "+envvar.SpotifyPlaylistTriggers+" is only used to create it and can be removed",
@@ -221,7 +230,7 @@ func loadPlaylistTags() (discord.TriggerSource, discord.TagStore) {
 // logTriggers logs the names of the loaded triggers
 func logTriggers(c *trigger.Config) {
 	var names []string
-	for _, name := range slices.Sorted(maps.Keys(c.Playlists)) {
+	for _, name := range slices.Sorted(maps.Keys(c.Tags)) {
 		names = append(names, c.Prefix+name)
 	}
 	logger.Info("Loaded playlist triggers", zap.Strings(zapkey.Triggers, names))

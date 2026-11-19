@@ -3,6 +3,7 @@ package trigger
 
 import (
 	"fmt"
+	"maps"
 	"os"
 	"regexp"
 	"slices"
@@ -18,6 +19,9 @@ const (
 	// DefaultPrefix marks a word as a trigger when no prefix is configured
 	DefaultPrefix = "!"
 
+	// PlusPrefix marks a trigger that also adds to the default playlist, e.g. "+relax"
+	PlusPrefix = "+"
+
 	// DefaultName is the reserved trigger for the default playlist
 	DefaultName = "default"
 )
@@ -30,16 +34,25 @@ const namePattern = `[\p{L}\p{N}]+(?:[_-][\p{L}\p{N}]+)*`
 // any space, opening brackets/quotes, or Discord markdown (bold, italics, strikethrough, spoilers, code, quotes)
 const boundaryPattern = `(?:^|[\s\p{Z}\p{Ps}\p{Pi}*_~|"'\x60>])`
 
-var nameRegex = regexp.MustCompile(`^` + namePattern + `$`)
+var (
+	nameRegex   = regexp.MustCompile(`^` + namePattern + `$`)
+	digitsRegex = regexp.MustCompile(`^[0-9]+$`)
+)
 
 // Config represents the trigger to playlist mapping
 type Config struct {
-	Prefix            string              // Single character that marks a word as a trigger
-	DefaultPlaylistID string              // Playlist used when no known trigger is present
-	Playlists         map[string][]string // Lowercase trigger name to playlist IDs
-	ReplyUnknown      bool                // Reply to messages that use an unknown trigger
+	Prefix            string            // Single character that marks a word as a trigger
+	DefaultPlaylistID string            // Playlist used when no known trigger is present
+	Tags              map[string]string // Lowercase trigger name to its playlist ID
+	ReplyUnknown      bool              // Reply to messages that use an unknown trigger
 
 	triggerRegex *regexp.Regexp
+}
+
+// Trigger is a trigger found in a message
+type Trigger struct {
+	Name string // Lowercase name, without the prefix
+	Plus bool   // Used with PlusPrefix, so the default playlist is added too
 }
 
 // Load creates the trigger configuration from env vars
@@ -52,7 +65,8 @@ func Load() (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
-	return settings.withPlaylists(playlists)
+	tags, _ := ToTags(playlists, settings.DefaultPlaylistID)
+	return settings.withTags(tags)
 }
 
 // LoadSettings creates the trigger configuration from env vars, without any tags
@@ -73,7 +87,8 @@ func LoadSettings() (*Config, error) {
 	return New(prefix, os.Getenv(envvar.SpotifyPlaylistID), nil, replyUnknown)
 }
 
-// LoadSeed parses the tags in SPOTIFY_PLAYLIST_TRIGGERS, which seed the tags file
+// LoadSeed parses the tags in SPOTIFY_PLAYLIST_TRIGGERS, which seed the tags file.
+// The secret may list several playlists per tag; ToTags converts them to one each.
 func LoadSeed() (map[string][]string, error) {
 	playlists, err := ParsePlaylists(os.Getenv(envvar.SpotifyPlaylistTriggers))
 	if err != nil {
@@ -83,22 +98,26 @@ func LoadSeed() (map[string][]string, error) {
 }
 
 // New creates and validates a trigger configuration
-func New(prefix, defaultPlaylistID string, playlists map[string][]string, replyUnknown bool) (*Config, error) {
+func New(prefix, defaultPlaylistID string, tags map[string]string, replyUnknown bool) (*Config, error) {
 	if err := validatePrefix(prefix); err != nil {
 		return nil, err
 	}
 	if defaultPlaylistID == "" {
 		return nil, fmt.Errorf("default playlist ID is empty")
 	}
-	if _, ok := playlists[DefaultName]; ok {
+	if _, ok := tags[DefaultName]; ok {
 		return nil, fmt.Errorf("%q is reserved for the default playlist", DefaultName)
 	}
+	if tags == nil {
+		tags = map[string]string{}
+	}
+	prefixes := regexp.QuoteMeta(prefix) + regexp.QuoteMeta(PlusPrefix)
 	return &Config{
 		Prefix:            prefix,
 		DefaultPlaylistID: defaultPlaylistID,
-		Playlists:         playlists,
+		Tags:              tags,
 		ReplyUnknown:      replyUnknown,
-		triggerRegex:      regexp.MustCompile(boundaryPattern + regexp.QuoteMeta(prefix) + `(` + namePattern + `)`),
+		triggerRegex:      regexp.MustCompile(boundaryPattern + `([` + prefixes + `])(` + namePattern + `)`),
 	}, nil
 }
 
@@ -131,37 +150,75 @@ func ParsePlaylists(s string) (map[string][]string, error) {
 	return playlists, nil
 }
 
-// Extract returns the lowercase trigger names in the content, in order and without duplicates
-func (c *Config) Extract(content string) []string {
-	var names []string
-	for _, match := range c.triggerRegex.FindAllStringSubmatch(content, -1) {
-		names = appendUnique(names, strings.ToLower(match[1]))
+// ToTags converts tags with several playlists to one playlist each, since "+tag" now
+// covers the default playlist. A tag keeps its first playlist other than the default one,
+// or the default playlist if that's all it had. changed lists the tags that lost playlists.
+func ToTags(playlists map[string][]string, defaultPlaylistID string) (tags map[string]string, changed []string) {
+	tags = make(map[string]string, len(playlists))
+	for _, name := range slices.Sorted(maps.Keys(playlists)) {
+		ids := playlists[name]
+		if len(ids) == 0 {
+			continue
+		}
+		others := slices.DeleteFunc(slices.Clone(ids), func(id string) bool { return id == defaultPlaylistID })
+		if len(others) == 0 {
+			tags[name] = defaultPlaylistID
+		} else {
+			tags[name] = others[0]
+		}
+		if len(ids) > 1 {
+			changed = append(changed, name)
+		}
 	}
-	return names
+	return tags, changed
+}
+
+// Extract returns the triggers in the content, in order and without duplicates
+func (c *Config) Extract(content string) []Trigger {
+	var triggers []Trigger
+	for _, match := range c.triggerRegex.FindAllStringSubmatch(content, -1) {
+		t := Trigger{Name: strings.ToLower(match[2]), Plus: match[1] == PlusPrefix}
+		if !slices.Contains(triggers, t) {
+			triggers = append(triggers, t)
+		}
+	}
+	return triggers
 }
 
 // Resolve returns the playlists the content's triggers map to, without duplicates,
-// along with any unknown trigger names. If no known trigger is present, the
-// default playlist is returned.
+// along with any unknown triggers as written (e.g. "!typo"). If no known trigger
+// is present, the default playlist is returned.
 func (c *Config) Resolve(content string) (playlistIDs []string, unknown []string) {
-	for _, name := range c.Extract(content) {
-		if name == DefaultName {
+	for _, t := range c.Extract(content) {
+		if t.Name == DefaultName {
 			playlistIDs = appendUnique(playlistIDs, c.DefaultPlaylistID)
 			continue
 		}
-		ids, ok := c.Playlists[name]
+		id, ok := c.Tags[t.Name]
 		if !ok {
-			unknown = append(unknown, name)
+			// "+1" and the like are reactions, not typos
+			if !(t.Plus && digitsRegex.MatchString(t.Name)) {
+				unknown = append(unknown, c.Format(t))
+			}
 			continue
 		}
-		for _, id := range ids {
-			playlistIDs = appendUnique(playlistIDs, id)
+		playlistIDs = appendUnique(playlistIDs, id)
+		if t.Plus {
+			playlistIDs = appendUnique(playlistIDs, c.DefaultPlaylistID)
 		}
 	}
 	if len(playlistIDs) == 0 {
 		playlistIDs = []string{c.DefaultPlaylistID}
 	}
 	return playlistIDs, unknown
+}
+
+// Format writes a trigger as it's typed, e.g. "!relax" or "+relax"
+func (c *Config) Format(t Trigger) string {
+	if t.Plus {
+		return PlusPrefix + t.Name
+	}
+	return c.Prefix + t.Name
 }
 
 // validatePrefix checks that the prefix is a single non-alphanumeric, non-space character
@@ -172,6 +229,9 @@ func validatePrefix(prefix string) error {
 	}
 	if unicode.IsLetter(r) || unicode.IsNumber(r) || unicode.IsSpace(r) || r == '_' || r == '-' {
 		return fmt.Errorf("trigger prefix %q must be a symbol", prefix)
+	}
+	if prefix == PlusPrefix {
+		return fmt.Errorf("trigger prefix can't be %q: it marks tags that also add to the default playlist", PlusPrefix)
 	}
 	return nil
 }

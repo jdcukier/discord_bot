@@ -309,14 +309,10 @@ func (a *AddTracksToPlaylist) playlistIDs(ctx context.Context) []string {
 
 // replyUnknownTriggers replies to the message listing the unknown triggers
 func (a *AddTracksToPlaylist) replyUnknownTriggers(ctx context.Context, unknown []string) {
-	names := make([]string, len(unknown))
-	for i, name := range unknown {
-		names[i] = a.triggers.Prefix + name
-	}
 	reply := &Reply{
 		session:  a.session,
 		event:    a.event,
-		response: "Unknown playlist: " + strings.Join(names, ", "),
+		response: "Unknown playlist: " + strings.Join(unknown, ", "),
 	}
 	reply.Execute(ctx)
 }
