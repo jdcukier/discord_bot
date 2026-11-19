@@ -5,6 +5,7 @@ import (
 	"context"
 	"os"
 	"strconv"
+	"unicode/utf8"
 
 	"go.uber.org/zap"
 
@@ -37,4 +38,26 @@ func VerboseLogsEnabled(ctx context.Context) bool {
 		Logger.With(zap.Error(err)).Warn("Failed to parse verbose logs enabled", fields...)
 	}
 	return verboseLogsEnabled
+}
+
+// redactedIDLength is how many leading characters of an ID are kept in logs
+const redactedIDLength = 4
+
+// RedactID shortens an ID for logging, e.g. "37i9dQZF1DXcBWIGoYBM5M" becomes "37i9…".
+// Deploy health checks publish recent logs on the public repo, so private IDs
+// such as playlist IDs must not appear in full.
+func RedactID(id string) string {
+	if utf8.RuneCountInString(id) <= redactedIDLength {
+		return id
+	}
+	return string([]rune(id)[:redactedIDLength]) + "…"
+}
+
+// RedactIDs applies RedactID to each ID
+func RedactIDs(ids []string) []string {
+	out := make([]string, len(ids))
+	for i, id := range ids {
+		out[i] = RedactID(id)
+	}
+	return out
 }

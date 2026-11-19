@@ -273,7 +273,7 @@ func (a *AddTracksToPlaylist) Execute(ctx context.Context) {
 
 	ctx, fields = ctxutil.WithZapFields(
 		ctx,
-		zap.Strings(zapkey.PlaylistIDs, playlistIDs),
+		zap.Strings(zapkey.PlaylistIDs, log.RedactIDs(playlistIDs)),
 	)
 
 	if err := a.playlistAdder.AddTracksToPlaylist(ctx, a.event.Author.ID, trackURLs, playlistIDs...); err != nil {

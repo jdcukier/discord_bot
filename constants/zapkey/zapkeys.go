@@ -35,6 +35,8 @@ const (
 	PlaylistID      = "playlist_id"
 	PlaylistIDs     = "playlist_ids"
 	PlaylistOwnerID = "playlist_owner_id"
+	Collaborative   = "collaborative"
+	Public          = "public"
 	Reply           = "reply"
 	TrackID         = "track_id"
 	TrackIDs        = "track_ids"

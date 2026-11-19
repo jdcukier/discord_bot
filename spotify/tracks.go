@@ -62,7 +62,7 @@ func (c *Client) doAddTracksToPlaylists(ctx context.Context, userID string, trac
 			return err
 		}
 		if err != nil && len(playlistIDs) > 1 {
-			err = fmt.Errorf("playlist %s: %w", playlistID, err)
+			err = fmt.Errorf("playlist %s: %w", log.RedactID(playlistID), err)
 		}
 		if err != nil {
 			errs = append(errs, err)
@@ -82,7 +82,7 @@ func (c *Client) doAddTracks(
 
 	ctx, fields := ctxutil.WithZapFields(
 		ctx,
-		zap.String(zapkey.PlaylistID, playlistID),
+		zap.String(zapkey.PlaylistID, log.RedactID(playlistID)),
 		zap.Strings(zapkey.TrackURLs, trackURLs),
 		zap.String(zapkey.UserID, userID),
 	)
@@ -110,7 +110,7 @@ func (c *Client) doAddTracks(
 
 	ctx, fields = ctxutil.WithZapFields(
 		ctx,
-		zap.String(zapkey.PlaylistID, playlistID),
+		zap.String(zapkey.PlaylistID, log.RedactID(playlistID)),
 		zap.Strings(zapkey.TrackURLs, trackURLs),
 		zap.Any(zapkey.TrackIDs, trackIDs),
 	)
@@ -119,7 +119,7 @@ func (c *Client) doAddTracks(
 	existingTrackIDs, err := c.allPlaylistTrackIDs(ctx, api, playlistID)
 	if err != nil {
 		logger.With(zap.Error(err)).Error("Cannot access playlist tracks", fields...)
-		return fmt.Errorf("cannot access playlist tracks %s: %w", playlistID, err)
+		return fmt.Errorf("cannot access playlist tracks %s: %w", log.RedactID(playlistID), err)
 	}
 	filteredTrackIDs := track.FilterTracks(existingTrackIDs, trackIDs)
 
