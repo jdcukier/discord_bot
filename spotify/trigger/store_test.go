@@ -508,12 +508,62 @@ playlists:
 	assert.Empty(t, moved.PlaylistName(defaultID))
 	assert.Empty(t, moved.PlaylistName(chillID))
 
-	// A hand-edited default playlist needs a valid ID, which isn't shown in full in the error
-	require.NoError(t, os.WriteFile(path, []byte("default_playlist:\n  name: X\n  id: "+gymID+"x\nplaylists: []\n"), 0o600))
+}
+
+func TestOpenStoreIgnoresInvalidDefaultPlaylist(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "tags.yaml")
+	playlists := "playlists:\n  - name: Gym\n    id: " + gymID + "\n    tags: [gym]\n"
+	// The block is cosmetic, so an invalid one only drops the default playlist's name.
+	// The error doesn't show IDs in full, since it's logged.
+	for name, block := range map[string]string{
+		"no ID":         "default_playlist: {name: X}\n",
+		"invalid ID":    "default_playlist:\n  name: X\n  id: " + gymID + "x\n",
+		"unknown field": "default_playlist:\n  name: X\n  id: " + defaultID + "\n  nmae: Y\n",
+		"not a map":     "default_playlist: " + gymID + "\n",
+		"wrong type":    "default_playlist:\n  name: [X]\n  id: " + defaultID + "\n",
+	} {
+		require.NoError(t, os.WriteFile(path, []byte(block+playlists), 0o600), name)
+		store, result, err := OpenStore(path, testSettings(t), nil)
+		require.NoError(t, err, name)
+		require.Error(t, result.DefaultErr, name)
+		assert.Contains(t, result.DefaultErr.Error(), "default_playlist", name)
+		assert.NotContains(t, result.DefaultErr.Error(), gymID, name)
+		assert.NotContains(t, result.DefaultErr.Error(), defaultID, name)
+		assert.Empty(t, store.PlaylistName(defaultID), name)
+		assert.Equal(t, map[string]string{"gym": gymID}, store.Config().Tags, name)
+		assert.Equal(t, "Gym", store.PlaylistName(gymID), name)
+
+		// The next save rewrites the file without it
+		require.NoError(t, store.SetPlaylistName(gymID, "Gym Bangers"), name)
+		assert.Equal(t, Header+"playlists:\n  - name: Gym Bangers\n    id: "+gymID+"\n    tags:\n      - gym\n", readFile(t, path), name)
+	}
+
+	// A valid file has no error, and unknown fields elsewhere still fail
+	require.NoError(t, os.WriteFile(path, []byte("default_playlist:\n  name: X\n  id: "+defaultID+"\n"+playlists), 0o600))
+	_, result, err := OpenStore(path, testSettings(t), nil)
+	require.NoError(t, err)
+	assert.NoError(t, result.DefaultErr)
+	require.NoError(t, os.WriteFile(path, []byte("default_playlist:\n  name: X\n  id: "+defaultID+"\nplaylist: []\n"), 0o600))
 	_, _, err = OpenStore(path, testSettings(t), nil)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "default_playlist")
-	assert.NotContains(t, err.Error(), gymID)
+	assert.Error(t, err)
+}
+
+func TestStoreSetPlaylistNames(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "tags.yaml")
+	store, _ := openTestStore(t, path, map[string][]string{"gym": {gymID}})
+
+	// One call saves every name, skipping empty names and playlists without tags
+	require.NoError(t, store.SetPlaylistNames(map[string]string{gymID: "Gym", defaultID: "Everything", chillID: "Chill", "": "x"}))
+	assert.Equal(t, "Gym", store.PlaylistName(gymID))
+	assert.Equal(t, "Everything", store.PlaylistName(defaultID))
+	assert.Empty(t, store.PlaylistName(chillID))
+	assert.Equal(t, Header+"default_playlist:\n  name: Everything\n  id: "+defaultID+"\nplaylists:\n  - name: Gym\n    id: "+gymID+
+		"\n    tags:\n      - gym\n", readFile(t, path))
+
+	// Nothing to change: the file isn't rewritten
+	require.NoError(t, os.Remove(path))
+	require.NoError(t, store.SetPlaylistNames(map[string]string{gymID: "Gym", chillID: "Chill", defaultID: ""}))
+	assert.NoFileExists(t, path)
 }
 
 func TestStoreSetRemove(t *testing.T) {

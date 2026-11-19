@@ -237,7 +237,8 @@ func loadPlaylistTags() (discord.TriggerSource, discord.TagStore) {
 	return store, store
 }
 
-// logStoreMigration logs what OpenStore did with the JSON tags file of earlier versions, if anything
+// logStoreMigration logs what OpenStore did with the JSON tags file of earlier versions, if anything,
+// and problems it worked around
 func logStoreMigration(path string, result trigger.OpenResult) {
 	switch {
 	case result.YAMLBackup != "":
@@ -260,6 +261,10 @@ func logStoreMigration(path string, result trigger.OpenResult) {
 	if result.BackupErr != nil {
 		logger.Warn("Problem backing up a playlist tags file; using the YAML file anyway",
 			zap.String(zapkey.Path, path), zap.Error(result.BackupErr))
+	}
+	if result.DefaultErr != nil {
+		logger.Warn("Ignoring the default playlist's name in the playlist tags file; it's rewritten on the next save",
+			zap.String(zapkey.Path, path), zap.Error(result.DefaultErr))
 	}
 }
 

@@ -72,7 +72,7 @@ playlists:
       - workout
 ```
 
-`name` is only there to make the file readable and label playlists in `/tags` and the `/tag` replies: the bot goes by `id`. `default_playlist` only holds the default playlist's name, so it's kept even when no tag adds to it; the default playlist is still set with `SPOTIFY_PLAYLIST_ID`, and the name is ignored if the IDs don't match.
+`name` is only there to make the file readable and label playlists in `/tags` and the `/tag` replies: the bot goes by `id`. `default_playlist` only holds the default playlist's name, so it's kept even when no tag adds to it; the default playlist is still set with `SPOTIFY_PLAYLIST_ID`, and the name is ignored if the IDs don't match. An invalid `default_playlist` block is ignored with a warning instead of stopping the file from loading, and rewritten on the next save.
 
 Spotify access is per user, so a missing name is looked up with the Spotify account of whoever runs `/tags`, `/tag add`, `/tag set` or `/tag alias`, and saved. Names are also refreshed at most once an hour when someone adds a song to the playlist, so renames show up. A lookup never asks anyone to connect Spotify; if it fails, the old name (or none) is kept, and replies say "Untitled playlist" or "Default playlist" instead.
 

@@ -56,6 +56,27 @@ type storeFile struct {
 type storeDefault struct {
 	Name string `yaml:"name"`
 	ID   string `yaml:"id"`
+
+	err error // Why the block couldn't be read, if it couldn't
+}
+
+// UnmarshalYAML reads the block as strictly as the rest of the file, but records errors instead of
+// failing, since the block is cosmetic: an invalid one shouldn't keep the tags from loading
+func (d *storeDefault) UnmarshalYAML(value *yaml.Node) error {
+	type plain storeDefault // Without this method, so decoding doesn't recurse
+	var block plain
+	data, err := yaml.Marshal(value)
+	if err == nil {
+		decoder := yaml.NewDecoder(bytes.NewReader(data))
+		decoder.KnownFields(true)
+		err = decoder.Decode(&block)
+	}
+	if err != nil {
+		*d = storeDefault{err: err}
+		return nil
+	}
+	*d = storeDefault(block)
+	return nil
 }
 
 // storePlaylist is a playlist in the tags file
@@ -95,6 +116,7 @@ type OpenResult struct {
 	Dropped    map[string][]string // Tags converted from several playlists to one, and the playlists they lost
 	Backup     string              // Where the JSON file was moved: after converting it, or if it was left over from an interrupted conversion
 	YAMLBackup string              // Where the YAML file was moved before converting a newer JSON file, e.g. after a rollback
+	DefaultErr error               // The YAML file's default_playlist block is invalid, so the default playlist's name was ignored; it's rewritten on the next save
 	SaveErr    error               // Converting the JSON file worked but saving the YAML file didn't; it's retried on the next change
 	BackupErr  error               // The YAML file is in use, but the JSON file couldn't be moved aside (retried on the next change) or the move flushed
 }
@@ -141,6 +163,7 @@ func OpenStore(path string, settings *Config, seed map[string][]string) (*Store,
 	s, result, err := openStore(StorePath(path), settings, seed)
 	result.SaveErr = redactIDs(result.SaveErr)
 	result.BackupErr = redactIDs(result.BackupErr)
+	result.DefaultErr = redactIDs(result.DefaultErr)
 	return s, result, redactIDs(err)
 }
 
@@ -171,10 +194,11 @@ func openStore(path string, settings *Config, seed map[string][]string) (*Store,
 		if err != nil {
 			return nil, result, fmt.Errorf("failed to read %s: %w", path, err)
 		}
-		tags, names, err := parseStoreFile(data)
+		tags, names, defaultErr, err := parseStoreFile(data)
 		if err != nil {
 			return nil, result, fmt.Errorf("invalid tags in %s: %w", path, err)
 		}
+		result.DefaultErr = defaultErr
 		if err := s.init(settings, tags, names); err != nil {
 			return nil, result, fmt.Errorf("invalid tags in %s: %w", path, err)
 		}
@@ -220,7 +244,7 @@ func (s *Store) convert(settings *Config, legacyPath string, replace bool) (*Sto
 	if replace {
 		// Names are cosmetic, so an invalid YAML file just doesn't provide any
 		if data, err := os.ReadFile(s.path); err == nil {
-			_, names, _ = parseStoreFile(data)
+			_, names, _, _ = parseStoreFile(data)
 		}
 	}
 	if err := s.init(settings, tags, names); err != nil {
@@ -247,53 +271,56 @@ func (s *Store) convert(settings *Config, legacyPath string, replace bool) (*Sto
 
 // parseStoreFile reads the YAML tags file into tag names to playlist IDs, and playlist IDs to names.
 // Each playlist must be listed once with at least one tag, and each tag must be under one playlist.
-// The default playlist's name may also be given on its own, for when no tag adds to it.
+// The default playlist's name may also be given on its own, for when no tag adds to it; if that
+// block is invalid, its name is left out and defaultErr says why, since the name is cosmetic.
 // Errors only show the start of playlist IDs, since they're logged.
-func parseStoreFile(data []byte) (tags, names map[string]string, err error) {
+func parseStoreFile(data []byte) (tags, names map[string]string, defaultErr, err error) {
 	var file storeFile
 	decoder := yaml.NewDecoder(bytes.NewReader(data))
 	decoder.KnownFields(true) // Catch typos in hand edits instead of silently dropping tags
 	if err := decoder.Decode(&file); err != nil && !errors.Is(err, io.EOF) {
-		return nil, nil, fmt.Errorf("failed to parse YAML: %w", err)
+		return nil, nil, nil, fmt.Errorf("failed to parse YAML: %w", err)
 	}
 	tags = make(map[string]string)
 	names = make(map[string]string)
 	for i, playlist := range file.Playlists {
 		id, err := ExtractPlaylistID(playlist.ID)
 		if err != nil {
-			return nil, nil, fmt.Errorf("playlist #%d: %q isn't a valid Spotify playlist ID or link", i+1, log.RedactID(playlist.ID))
+			return nil, nil, nil, fmt.Errorf("playlist #%d: %q isn't a valid Spotify playlist ID or link", i+1, log.RedactID(playlist.ID))
 		}
 		if _, ok := names[id]; ok {
-			return nil, nil, fmt.Errorf("playlist %s is listed more than once; list all its tags under one entry", log.RedactID(id))
+			return nil, nil, nil, fmt.Errorf("playlist %s is listed more than once; list all its tags under one entry", log.RedactID(id))
 		}
 		names[id] = playlist.Name
 		if len(playlist.Tags) == 0 {
-			return nil, nil, fmt.Errorf("playlist %s has no tags; add one or delete the playlist", log.RedactID(id))
+			return nil, nil, nil, fmt.Errorf("playlist %s has no tags; add one or delete the playlist", log.RedactID(id))
 		}
 		for _, name := range playlist.Tags {
 			if err := ValidateName(name); err != nil {
-				return nil, nil, fmt.Errorf("playlist %s: %w", log.RedactID(id), err)
+				return nil, nil, nil, fmt.Errorf("playlist %s: %w", log.RedactID(id), err)
 			}
 			if previous, ok := tags[name]; ok {
 				if previous == id {
-					return nil, nil, fmt.Errorf("tag %q is listed twice under playlist %s", name, log.RedactID(id))
+					return nil, nil, nil, fmt.Errorf("tag %q is listed twice under playlist %s", name, log.RedactID(id))
 				}
-				return nil, nil, fmt.Errorf("tag %q is listed under more than one playlist, but a tag adds to one playlist only", name)
+				return nil, nil, nil, fmt.Errorf("tag %q is listed under more than one playlist, but a tag adds to one playlist only", name)
 			}
 			tags[name] = id
 		}
 	}
 	if file.Default != nil {
 		id, err := ExtractPlaylistID(file.Default.ID)
-		if err != nil {
-			return nil, nil, fmt.Errorf("default_playlist: %q isn't a valid Spotify playlist ID or link", log.RedactID(file.Default.ID))
-		}
-		if names[id] == "" {
+		switch {
+		case file.Default.err != nil:
+			defaultErr = fmt.Errorf("default_playlist: %w", file.Default.err)
+		case err != nil:
+			defaultErr = fmt.Errorf("default_playlist: %q isn't a valid Spotify playlist ID or link", log.RedactID(file.Default.ID))
+		case names[id] == "":
 			names[id] = file.Default.Name
 		}
 	}
 	maps.DeleteFunc(names, func(_, name string) bool { return name == "" })
-	return tags, names, nil
+	return tags, names, defaultErr, nil
 }
 
 // parseJSONStoreFile reads the JSON tags file of earlier versions, in either format: one playlist
@@ -378,24 +405,34 @@ func (s *Store) PlaylistName(id string) string {
 // Names are only kept for playlists with tags and the default playlist, so other playlists are
 // ignored, as are empty names.
 func (s *Store) SetPlaylistName(id, name string) error {
-	if name == "" {
-		return nil
-	}
+	return s.SetPlaylistNames(map[string]string{id: name})
+}
 
+// SetPlaylistNames is SetPlaylistName for several playlists (IDs to names), saving the file once
+func (s *Store) SetPlaylistNames(names map[string]string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	current := s.Config()
-	names := *s.names.Load()
-	if names[id] == name || (id != current.DefaultPlaylistID && !slices.Contains(slices.Collect(maps.Values(current.Tags)), id)) {
+	tagged := slices.Collect(maps.Values(current.Tags))
+	saved := *s.names.Load()
+	var updated map[string]string
+	for id, name := range names {
+		if name == "" || saved[id] == name || (id != current.DefaultPlaylistID && !slices.Contains(tagged, id)) {
+			continue
+		}
+		if updated == nil {
+			updated = maps.Clone(saved)
+		}
+		updated[id] = name
+	}
+	if updated == nil {
 		return nil
 	}
-	names = maps.Clone(names)
-	names[id] = name
-	if err := s.save(current.Tags, names); err != nil {
+	if err := s.save(current.Tags, updated); err != nil {
 		return err
 	}
-	s.names.Store(&names)
+	s.names.Store(&updated)
 	return nil
 }
 

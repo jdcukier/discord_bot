@@ -1,6 +1,7 @@
 package discord
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -21,11 +22,13 @@ import (
 
 // fakeNameFetcher returns names from a map, or err
 type fakeNameFetcher struct {
-	mu    sync.Mutex
-	names map[string]string
-	err   error
-	calls []string // Playlist IDs looked up
-	users []string // Users each lookup was made for
+	mu       sync.Mutex
+	names    map[string]string
+	err      error
+	userErrs map[string]error // Errors for some users, e.g. ones who haven't connected Spotify
+	untilCtx bool             // If set, every call blocks until its context is done, and fails
+	calls    []string         // Playlist IDs looked up
+	users    []string         // Users each lookup was made for
 
 	wait map[int]chan struct{} // Calls (counted from 0) that block until their channel is closed
 	hold chan struct{}         // If set, every call blocks until it's closed
@@ -46,7 +49,7 @@ func (f *fakeNameFetcher) FetchPlaylistName(ctx context.Context, userID, playlis
 	f.deadlines = append(f.deadlines, left)
 	f.active++
 	f.maxActive = max(f.maxActive, f.active)
-	name, err := f.names[playlistID], f.err
+	name, err := f.names[playlistID], cmp.Or(f.userErrs[userID], f.err)
 	wait, hold := f.wait[call], f.hold
 	f.mu.Unlock()
 	if wait != nil {
@@ -54,6 +57,10 @@ func (f *fakeNameFetcher) FetchPlaylistName(ctx context.Context, userID, playlis
 	}
 	if hold != nil {
 		<-hold
+	}
+	if f.untilCtx {
+		<-ctx.Done()
+		name, err = "", ctx.Err()
 	}
 	f.mu.Lock()
 	f.active--
@@ -173,22 +180,113 @@ func TestPlaylistNamesLastLookupWins(t *testing.T) {
 	fetcher := &fakeNameFetcher{names: map[string]string{gymTestID: "Old"}, wait: map[int]chan struct{}{0: release}}
 	names := NewPlaylistNames(fetcher, store)
 
-	// The first lookup gets the old name but finishes last
+	// The first lookup (a refresh) gets the old name but finishes last
 	done := make(chan struct{})
 	go func() {
-		names.lookup(context.Background(), "user-id", gymTestID, true)
+		names.RefreshStale(context.Background(), "user-id", []string{gymTestID})
 		close(done)
 	}()
 	require.Eventually(t, func() bool { return len(fetcher.lookups()) == 1 }, time.Second, time.Millisecond)
 	fetcher.mu.Lock()
 	fetcher.names[gymTestID] = "New"
 	fetcher.mu.Unlock()
-	names.lookup(context.Background(), "user-id", gymTestID, true)
+	assert.Equal(t, "New", names.Name(context.Background(), "user-id", gymTestID))
 	assert.Equal(t, "New", store.PlaylistName(gymTestID))
 
 	close(release)
 	<-done
 	assert.Equal(t, "New", store.PlaylistName(gymTestID))
+}
+
+func TestPlaylistNamesFailedLookupKeepsEarlierResult(t *testing.T) {
+	store := newTestTagStore(t, map[string][]string{"gym": {gymTestID}})
+	release := make(chan struct{})
+	fetcher := &fakeNameFetcher{
+		names:    map[string]string{gymTestID: "Gym"},
+		userErrs: map[string]error{"no-spotify": worker.ErrAuthRequired},
+		wait:     map[int]chan struct{}{0: release},
+	}
+	names := NewPlaylistNames(fetcher, store)
+
+	// A refresh with Spotify access is in flight when someone without it runs /tags
+	done := make(chan struct{})
+	go func() {
+		names.RefreshStale(context.Background(), "user-id", []string{gymTestID})
+		close(done)
+	}()
+	require.Eventually(t, func() bool { return len(fetcher.lookups()) == 1 }, time.Second, time.Millisecond)
+	assert.Empty(t, names.Name(context.Background(), "no-spotify", gymTestID))
+
+	// The later lookup failed, so the earlier one is still saved
+	close(release)
+	<-done
+	assert.Equal(t, "Gym", store.PlaylistName(gymTestID))
+}
+
+func TestPlaylistNamesFailedLookupsDontHoldOffRefreshes(t *testing.T) {
+	store := newTestTagStore(t, map[string][]string{"gym": {gymTestID}})
+	fetcher := &fakeNameFetcher{names: map[string]string{gymTestID: "Gym"}, userErrs: map[string]error{"no-spotify": worker.ErrAuthRequired}}
+	names := NewPlaylistNames(fetcher, store)
+
+	// Neither a failed lookup for a reply nor a failed refresh counts as the hourly refresh
+	assert.Empty(t, names.Name(context.Background(), "no-spotify", gymTestID))
+	names.RefreshStale(context.Background(), "no-spotify", []string{gymTestID})
+	names.RefreshStale(context.Background(), "user-id", []string{gymTestID})
+	assert.Equal(t, []string{gymTestID, gymTestID, gymTestID}, fetcher.lookups())
+	assert.Equal(t, "Gym", store.PlaylistName(gymTestID))
+
+	// A successful one does
+	names.RefreshStale(context.Background(), "user-id", []string{gymTestID})
+	assert.Len(t, fetcher.lookups(), 3)
+}
+
+func TestPlaylistNamesNamesSkipsQueuedLookupsAfterTimeout(t *testing.T) {
+	ids := make([]string, 10)
+	tags := map[string][]string{}
+	for i := range ids {
+		ids[i] = fmt.Sprintf("%022d", i)
+		tags[fmt.Sprintf("tag%d", i)] = []string{ids[i]}
+	}
+	store := newTestTagStore(t, tags)
+	fetcher := &fakeNameFetcher{untilCtx: true}
+	names := NewPlaylistNames(fetcher, store)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	assert.Empty(t, names.Names(ctx, "user-id", ids))
+	// Only the lookups that had started ran; the queued ones were skipped
+	assert.Len(t, fetcher.lookups(), maxPlaylistNameLookups)
+	names.mu.Lock()
+	assert.Len(t, names.lookups, maxPlaylistNameLookups)
+	assert.Empty(t, names.refreshed)
+	names.mu.Unlock()
+}
+
+// countingNameStore counts the calls that save names
+type countingNameStore struct {
+	*trigger.Store
+	mu    sync.Mutex
+	saves []map[string]string
+}
+
+func (s *countingNameStore) SetPlaylistNames(names map[string]string) error {
+	s.mu.Lock()
+	s.saves = append(s.saves, maps.Clone(names))
+	s.mu.Unlock()
+	return s.Store.SetPlaylistNames(names)
+}
+
+func TestPlaylistNamesNamesSavesOnce(t *testing.T) {
+	store := &countingNameStore{Store: newTestTagStore(t, map[string][]string{"gym": {gymTestID}, "chill": {chillTestID}})}
+	fetcher := &fakeNameFetcher{names: map[string]string{gymTestID: "Gym", chillTestID: "Chill", defaultTestID: "Everything"}}
+	names := NewPlaylistNames(fetcher, store)
+
+	ids := []string{defaultTestID, gymTestID, chillTestID}
+	names.Names(context.Background(), "user-id", ids)
+	assert.Equal(t, []map[string]string{{gymTestID: "Gym", chillTestID: "Chill", defaultTestID: "Everything"}}, store.saves)
+	for _, id := range ids {
+		assert.Equal(t, fetcher.names[id], store.PlaylistName(id))
+	}
 }
 
 func TestPlaylistNamesRefreshStale(t *testing.T) {
@@ -206,7 +304,9 @@ func TestPlaylistNamesRefreshStale(t *testing.T) {
 	assert.Equal(t, playlistNameTimeout, fetcher.deadlines[0].Round(time.Second))
 
 	// A failed refresh keeps the saved name
+	names.mu.Lock()
 	names.refreshed = map[string]time.Time{}
+	names.mu.Unlock()
 	fetcher.err = worker.ErrAuthRequired
 	names.RefreshStale(context.Background(), "user-id", []string{gymTestID})
 	assert.Equal(t, "Gym Bangers", store.PlaylistName(gymTestID))
@@ -276,6 +376,8 @@ type fakeResponder struct {
 	followups []*discordgo.WebhookParams
 	fetcher   *fakeNameFetcher // If set, "respond", "defer" and "edit" record how many lookups preceded them
 	lookups   []int
+
+	editErr, followupErr error // Returned by every edit or follow-up
 }
 
 func (f *fakeResponder) record(call string) {
@@ -298,13 +400,13 @@ func (f *fakeResponder) InteractionRespond(_ *discordgo.Interaction, resp *disco
 func (f *fakeResponder) InteractionResponseEdit(_ *discordgo.Interaction, edit *discordgo.WebhookEdit, _ ...discordgo.RequestOption) (*discordgo.Message, error) {
 	f.record("edit")
 	f.edits = append(f.edits, *edit.Content)
-	return &discordgo.Message{}, nil
+	return &discordgo.Message{}, f.editErr
 }
 
 func (f *fakeResponder) FollowupMessageCreate(_ *discordgo.Interaction, _ bool, params *discordgo.WebhookParams, _ ...discordgo.RequestOption) (*discordgo.Message, error) {
 	f.record("followup")
 	f.followups = append(f.followups, params)
-	return &discordgo.Message{}, nil
+	return &discordgo.Message{}, f.followupErr
 }
 
 // testInteraction builds a slash command interaction run by user-id, with string options
@@ -462,4 +564,42 @@ func TestTagsCommandSplitsLongLists(t *testing.T) {
 		assert.Equal(t, discordgo.MessageFlagsEphemeral, followup.Flags)
 	}
 	assert.True(t, strings.HasPrefix(responder.edits[0], "## 🎵 Playlist tags\n**Playlists**\n"))
+}
+
+func TestDeferredReplyFallsBackToFollowup(t *testing.T) {
+	store := newTestTagStore(t, nil)
+	fetcher := &fakeNameFetcher{names: map[string]string{gymTestID: "Gym"}}
+	h := testTagHandler(store, fetcher)
+
+	// The public reply is sent as a public follow-up when the deferred reply can't be filled in
+	responder := &fakeResponder{editErr: errors.New("unknown webhook")}
+	h.tagCommand(responder, testInteraction(tagCommand, tagAddSubcommand, tagOption, "gym", playlistOption, gymTestID))
+	assert.Equal(t, []string{"defer", "edit", "followup"}, responder.calls)
+	require.Len(t, responder.followups, 1)
+	assert.Equal(t, responder.edits[0], responder.followups[0].Content)
+	assert.Contains(t, responder.followups[0].Content, "🎧 **[Gym]")
+	assert.Zero(t, responder.followups[0].Flags)
+	assert.Equal(t, &discordgo.MessageAllowedMentions{}, responder.followups[0].AllowedMentions)
+
+	// /tags does the same privately, then sends the rest
+	tags := map[string][]string{}
+	for i := range 40 {
+		tags[fmt.Sprintf("a-very-long-tag-name-for-testing-%d", i)] = []string{fmt.Sprintf("%022d", i)}
+	}
+	store = newTestTagStore(t, tags)
+	h = testTagHandler(store, &fakeNameFetcher{err: worker.ErrAuthRequired})
+	responder = &fakeResponder{editErr: errors.New("unknown webhook")}
+	h.tagsCommand(responder, testInteraction(tagsCommand, ""))
+	chunks := listTags(store.Config(), nil)
+	require.Greater(t, len(chunks), 1)
+	assert.Equal(t, append([]string{"defer", "edit"}, slices.Repeat([]string{"followup"}, len(chunks))...), responder.calls)
+	for i, followup := range responder.followups {
+		assert.Equal(t, chunks[i], followup.Content)
+		assert.Equal(t, discordgo.MessageFlagsEphemeral, followup.Flags)
+	}
+
+	// If the follow-up fails too, nothing else is sent
+	responder = &fakeResponder{editErr: errors.New("unknown webhook"), followupErr: errors.New("unknown webhook")}
+	h.tagsCommand(responder, testInteraction(tagsCommand, ""))
+	assert.Equal(t, []string{"defer", "edit", "followup"}, responder.calls)
 }

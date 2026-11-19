@@ -234,7 +234,7 @@ func (h *InteractionSessionHandler) tagsCommand(s interactionResponder, i *disco
 // content), and the others as follow-ups
 func sendTagList(s interactionResponder, i *discordgo.InteractionCreate, chunks []string, deferred bool) {
 	if deferred {
-		if !editResponse(s, i, chunks[0]) {
+		if !editResponse(s, i, chunks[0], true) {
 			return
 		}
 	} else {
@@ -310,7 +310,7 @@ func (h *InteractionSessionHandler) sendTagReply(s interactionResponder, i *disc
 	if !deferResponse(s, i, false) {
 		return
 	}
-	editResponse(s, i, reply.withName(h.names.Name(context.Background(), interactionUserID(i), reply.playlistID)))
+	editResponse(s, i, reply.withName(h.names.Name(context.Background(), interactionUserID(i), reply.playlistID)), false)
 }
 
 // autocomplete suggests options while a slash command is being typed
@@ -368,14 +368,29 @@ func deferResponse(s interactionResponder, i *discordgo.InteractionCreate, priva
 	return true
 }
 
-// editResponse fills in a deferred reply without pinging anyone, and reports whether it succeeded
-func editResponse(s interactionResponder, i *discordgo.InteractionCreate, content string) bool {
+// editResponse fills in a deferred reply without pinging anyone, and reports whether it succeeded.
+// If that fails, it sends the reply as a follow-up instead, so the user isn't left with "thinking…".
+// private must match the deferred reply.
+func editResponse(s interactionResponder, i *discordgo.InteractionCreate, content string, private bool) bool {
 	content = truncate(content, maxMessageLength)
-	if _, err := s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
+	_, err := s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
 		Content:         &content,
 		AllowedMentions: &discordgo.MessageAllowedMentions{},
+	})
+	if err == nil {
+		return true
+	}
+	logger.Warn("failed to send deferred slash command response; sending it as a follow-up", zap.Error(err))
+	var flags discordgo.MessageFlags
+	if private {
+		flags = discordgo.MessageFlagsEphemeral
+	}
+	if _, err := s.FollowupMessageCreate(i.Interaction, false, &discordgo.WebhookParams{
+		Content:         content,
+		Flags:           flags,
+		AllowedMentions: &discordgo.MessageAllowedMentions{},
 	}); err != nil {
-		logger.Error("failed to send deferred slash command response", zap.Error(err))
+		logger.Error("failed to send slash command response as a follow-up", zap.Error(err))
 		return false
 	}
 	return true
