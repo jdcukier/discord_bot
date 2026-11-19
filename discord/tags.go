@@ -162,14 +162,9 @@ var exampleTags = []string{"gym", "chill", "party"}
 // listTags formats the playlists with their tags as messages of at most maxMessageLength characters.
 // name returns a playlist's name, or "" if it isn't known.
 func listTags(c *trigger.Config, name func(id string) string) []string {
-	// Group the tags by playlist. The default playlist always has its reserved tag.
-	byPlaylist := map[string][]string{c.DefaultPlaylistID: {trigger.DefaultName}}
-	for tag, id := range c.Tags {
-		byPlaylist[id] = append(byPlaylist[id], tag)
-	}
+	byPlaylist := tagsByPlaylist(c)
 	names := map[string]string{}
-	for id, tags := range byPlaylist {
-		slices.Sort(tags)
+	for id := range byPlaylist {
 		if name != nil {
 			names[id] = cleanPlaylistName(name(id))
 		}
@@ -192,20 +187,7 @@ func listTags(c *trigger.Config, name func(id string) string) []string {
 		)
 	})
 
-	playlistLine := func(id string) string {
-		label := names[id]
-		if label == "" {
-			label = untitledPlaylistLabel
-			if id == c.DefaultPlaylistID {
-				label = defaultPlaylistLabel
-			}
-		}
-		tags := make([]string, len(byPlaylist[id]))
-		for i, tag := range byPlaylist[id] {
-			tags[i] = "`" + tag + "`"
-		}
-		return fmt.Sprintf("🎧 **[%s](<%s>)** — %s", escapeMarkdown(label), playlistURL(id), strings.Join(tags, ", "))
-	}
+	line := func(id string) string { return playlistLine(c, id, names[id], byPlaylist[id], nil) }
 
 	first, second := exampleTagNames(c)
 	howTo := strings.Join([]string{
@@ -219,9 +201,9 @@ func listTags(c *trigger.Config, name func(id string) string) []string {
 
 	// Each block stays in one message unless it's too long on its own.
 	// A leading newline leaves a blank line between sections.
-	blocks := []string{howTo, "\n**Playlists**\n" + playlistLine(c.DefaultPlaylistID)}
+	blocks := []string{howTo, "\n**Playlists**\n" + line(c.DefaultPlaylistID)}
 	for _, id := range others {
-		blocks = append(blocks, playlistLine(id))
+		blocks = append(blocks, line(id))
 	}
 	if len(c.Tags) == 0 {
 		blocks = append(blocks, "No other tags yet.")
@@ -233,6 +215,47 @@ func listTags(c *trigger.Config, name func(id string) string) []string {
 		"> `/tag remove` — delete a tag",
 	}, "\n"))
 	return chunkLines(blocks, maxMessageLength)
+}
+
+// tagsByPlaylist groups the tags by playlist, each sorted. The default playlist always has its reserved tag.
+func tagsByPlaylist(c *trigger.Config) map[string][]string {
+	byPlaylist := map[string][]string{c.DefaultPlaylistID: {trigger.DefaultName}}
+	for tag, id := range c.Tags {
+		byPlaylist[id] = append(byPlaylist[id], tag)
+	}
+	for _, tags := range byPlaylist {
+		slices.Sort(tags)
+	}
+	return byPlaylist
+}
+
+// playlistLine formats a playlist and its tags as in /tags, bolding the tags in bold.
+// name is the playlist's cleaned name, or "" if it isn't known. A playlist without tags says so.
+func playlistLine(c *trigger.Config, id, name string, tags, bold []string) string {
+	formatted := make([]string, len(tags))
+	for i, tag := range tags {
+		formatted[i] = "`" + tag + "`"
+		if slices.Contains(bold, tag) {
+			formatted[i] = "**" + formatted[i] + "**"
+		}
+	}
+	list := strings.Join(formatted, ", ")
+	if len(tags) == 0 {
+		list = "no tags left"
+	}
+	return fmt.Sprintf("🎧 **%s** — %s", playlistMarkdownLink(c, id, name), list)
+}
+
+// playlistMarkdownLink formats a playlist as a masked link without an embed preview, labelled with
+// its cleaned name, or with a fallback label if name is ""
+func playlistMarkdownLink(c *trigger.Config, id, name string) string {
+	if name == "" {
+		name = untitledPlaylistLabel
+		if id == c.DefaultPlaylistID {
+			name = defaultPlaylistLabel
+		}
+	}
+	return fmt.Sprintf("[%s](<%s>)", escapeMarkdown(name), playlistURL(id))
 }
 
 // exampleTagNames picks two different tags for the /tags examples, preferring, in order:
