@@ -33,7 +33,8 @@ Tags are managed in Discord with slash commands, and changes apply immediately:
 | Command | What it does |
 | --- | --- |
 | `/tags` | Lists the playlists and the tags for each one. Only you see the reply. |
-| `/tag set tag:relax playlist:<link>` | Makes `!relax` (and `+relax`) add songs to the playlist. Creates the tag, or replaces its playlist if it already exists. |
+| `/tag add tag:relax playlist:<link>` | Creates `!relax` (and `+relax`) for the playlist. If the tag already exists, nothing changes. |
+| `/tag set tag:relax playlist:<link>` | Changes which playlist `!relax` adds to, creating the tag if it doesn't exist. |
 | `/tag remove tag:relax` | Deletes the tag. Songs tagged with it go to the default playlist. |
 
 - **Playlist links:** in Spotify, use **Share → Copy link to playlist**. The playlist must be collaborative so everyone's songs can be added. Spotify-made playlists (IDs starting with `37i9dQZF1`) are rejected because nobody can add to them.

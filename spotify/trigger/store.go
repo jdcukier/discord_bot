@@ -157,9 +157,20 @@ func (s *Store) Config() *Config {
 	return s.config.Load()
 }
 
+// Add creates a tag pointing to a playlist. If the tag already exists, it's left
+// unchanged and its playlist is returned as existing.
+func (s *Store) Add(name, playlistID string) (existing string, err error) {
+	return s.set(name, playlistID, false)
+}
+
 // Set points a tag to a playlist, creating the tag if needed.
 // It returns the playlist the tag pointed to before, if any.
 func (s *Store) Set(name, playlistID string) (previous string, err error) {
+	return s.set(name, playlistID, true)
+}
+
+// set creates a tag, or replaces its playlist if replace is true, and returns its previous playlist
+func (s *Store) set(name, playlistID string, replace bool) (previous string, err error) {
 	if err := ValidateName(name); err != nil {
 		return "", err
 	}
@@ -172,7 +183,7 @@ func (s *Store) Set(name, playlistID string) (previous string, err error) {
 
 	current := s.Config()
 	previous = current.Tags[name]
-	if previous == playlistID {
+	if previous == playlistID || (previous != "" && !replace) {
 		return previous, nil
 	}
 	tags := maps.Clone(current.Tags)

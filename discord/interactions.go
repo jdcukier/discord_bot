@@ -217,7 +217,7 @@ func (h *InteractionSessionHandler) tagsCommand(s *discordgo.Session, i *discord
 	}
 }
 
-// tagCommand handles /tag set and /tag remove
+// tagCommand handles /tag add, /tag set and /tag remove
 func (h *InteractionSessionHandler) tagCommand(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	data := i.ApplicationCommandData()
 	if len(data.Options) == 0 {
@@ -234,6 +234,8 @@ func (h *InteractionSessionHandler) tagCommand(s *discordgo.Session, i *discordg
 
 	var reply tagReply
 	switch sub.Name {
+	case tagAddSubcommand:
+		reply = addTag(h.tags, name, playlist)
 	case tagSetSubcommand:
 		reply = setTag(h.tags, name, playlist)
 	case tagRemoveSubcommand:

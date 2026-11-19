@@ -143,6 +143,28 @@ func TestStoreSetRemove(t *testing.T) {
 	assert.Error(t, err, "unknown tag")
 }
 
+func TestStoreAdd(t *testing.T) {
+	store, _ := openTestStore(t, filepath.Join(t.TempDir(), "tags.json"), nil)
+
+	existing, err := store.Add("gym", gymID)
+	require.NoError(t, err)
+	assert.Empty(t, existing)
+
+	// Add never replaces a tag's playlist
+	existing, err = store.Add("gym", chillID)
+	require.NoError(t, err)
+	assert.Equal(t, gymID, existing)
+
+	// Several tags can share a playlist
+	existing, err = store.Add("workout", gymID)
+	require.NoError(t, err)
+	assert.Empty(t, existing)
+	assert.Equal(t, map[string]string{"gym": gymID, "workout": gymID}, store.Config().Tags)
+
+	_, err = store.Add("default", gymID)
+	assert.Error(t, err)
+}
+
 func TestStoreSetErrors(t *testing.T) {
 	store, _ := openTestStore(t, filepath.Join(t.TempDir(), "tags.json"), nil)
 	for _, tc := range []struct{ name, id string }{

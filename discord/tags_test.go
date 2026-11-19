@@ -55,6 +55,34 @@ func TestSetTag(t *testing.T) {
 	assert.Equal(t, map[string]string{"gym": chillTestID, "workout": chillTestID, "main": defaultTestID}, store.Config().Tags)
 }
 
+func TestAddTag(t *testing.T) {
+	store := newTestTagStore(t, nil)
+
+	reply := addTag(store, "!Gym", "https://open.spotify.com/playlist/"+gymTestID)
+	assert.False(t, reply.private)
+	assert.Contains(t, reply.content, "`!gym` now adds songs to <https://open.spotify.com/playlist/"+gymTestID+">, and `+gym` adds them to the default playlist too.")
+	assert.Contains(t, reply.content, "collaborative")
+
+	// Existing tags aren't replaced
+	reply = addTag(store, "gym", chillTestID)
+	assert.True(t, reply.private)
+	assert.Equal(t, "`!gym` already adds to <https://open.spotify.com/playlist/"+gymTestID+">. Use `/tag set` to change its playlist.", reply.content)
+
+	reply = addTag(store, "gym", gymTestID)
+	assert.True(t, reply.private)
+	assert.Contains(t, reply.content, "already adds to that playlist")
+
+	// Aliases share a playlist
+	reply = addTag(store, "workout", gymTestID)
+	assert.False(t, reply.private)
+	assert.NotContains(t, reply.content, "collaborative")
+
+	reply = addTag(store, "default", gymTestID)
+	assert.True(t, strings.HasPrefix(reply.content, "Couldn't add the tag: "))
+
+	assert.Equal(t, map[string]string{"gym": gymTestID, "workout": gymTestID}, store.Config().Tags)
+}
+
 func TestSetTagErrors(t *testing.T) {
 	store := newTestTagStore(t, nil)
 	for _, tc := range []struct{ name, playlist string }{

@@ -19,6 +19,7 @@ const (
 	tagsCommand = "tags" // Lists the tags
 	tagCommand  = "tag"  // Changes the tags, via the subcommands below
 
+	tagAddSubcommand    = "add"
 	tagSetSubcommand    = "set"
 	tagRemoveSubcommand = "remove"
 
@@ -32,6 +33,7 @@ const maxMessageLength = 2000
 // TagStore reads and changes the playlist tags
 type TagStore interface {
 	Config() *trigger.Config
+	Add(name, playlistID string) (existing string, err error)
 	Set(name, playlistID string) (previous string, err error)
 	Remove(name string) (previous string, err error)
 }
@@ -64,16 +66,20 @@ func tagCommands() []*discordgo.ApplicationCommand {
 			Options: []*discordgo.ApplicationCommandOption{
 				{
 					Type:        discordgo.ApplicationCommandOptionSubCommand,
+					Name:        tagAddSubcommand,
+					Description: "Create a new tag that adds songs to a playlist",
+					Options: []*discordgo.ApplicationCommandOption{
+						tagName("Tag name, e.g. gym (letters and numbers, optionally joined by - or _)", false),
+						playlistLinkOption(),
+					},
+				},
+				{
+					Type:        discordgo.ApplicationCommandOptionSubCommand,
 					Name:        tagSetSubcommand,
 					Description: "Make a tag add songs to a playlist, creating the tag or replacing its playlist",
 					Options: []*discordgo.ApplicationCommandOption{
 						tagName("Tag name, e.g. gym (letters and numbers, optionally joined by - or _)", true),
-						{
-							Type:        discordgo.ApplicationCommandOptionString,
-							Name:        playlistOption,
-							Description: "Spotify playlist link. It must be collaborative so everyone's songs can be added.",
-							Required:    true,
-						},
+						playlistLinkOption(),
 					},
 				},
 				{
@@ -86,6 +92,16 @@ func tagCommands() []*discordgo.ApplicationCommand {
 				},
 			},
 		},
+	}
+}
+
+// playlistLinkOption is the required playlist link option
+func playlistLinkOption() *discordgo.ApplicationCommandOption {
+	return &discordgo.ApplicationCommandOption{
+		Type:        discordgo.ApplicationCommandOptionString,
+		Name:        playlistOption,
+		Description: "Spotify playlist link. It must be collaborative so everyone's songs can be added.",
+		Required:    true,
 	}
 }
 
@@ -139,25 +155,47 @@ func listTags(c *trigger.Config) []string {
 		lines = append(lines, fmt.Sprintf("%s: %s", playlistLink(id), formatTags(byPlaylist[id])))
 	}
 	if len(c.Tags) == 0 {
-		lines = append(lines, "No other tags yet. Create one with `/tag set`.")
+		lines = append(lines, "No other tags yet. Create one with `/tag add`.")
 	}
 	return chunkLines(lines, maxMessageLength)
 }
 
-// setTag handles /tag set
+// addTag handles /tag add, which only creates new tags so nobody replaces one by accident
+func addTag(store TagStore, rawName, rawPlaylist string) tagReply {
+	return changeTag(store, rawName, rawPlaylist, false)
+}
+
+// setTag handles /tag set, which creates a tag or replaces its playlist
 func setTag(store TagStore, rawName, rawPlaylist string) tagReply {
+	return changeTag(store, rawName, rawPlaylist, true)
+}
+
+// changeTag creates a tag, or replaces its playlist if replace is true
+func changeTag(store TagStore, rawName, rawPlaylist string, replace bool) tagReply {
 	c := store.Config()
 	name := normalizeTagName(c, rawName)
+	failure := "Couldn't add the tag: "
+	if replace {
+		failure = "Couldn't set the tag: "
+	}
 	playlistID, err := trigger.ParsePlaylistID(rawPlaylist)
 	if err != nil {
-		return tagReply{content: "Couldn't set the tag: " + err.Error(), private: true}
+		return tagReply{content: failure + err.Error(), private: true}
 	}
-	previous, err := store.Set(name, playlistID)
+	change := store.Add
+	if replace {
+		change = store.Set
+	}
+	previous, err := change(name, playlistID)
 	if err != nil {
-		return tagReply{content: "Couldn't set the tag: " + err.Error(), private: true}
+		return tagReply{content: failure + err.Error(), private: true}
 	}
 	if previous == playlistID {
 		return tagReply{content: fmt.Sprintf("`%s%s` already adds to that playlist.", c.Prefix, name), private: true}
+	}
+	if previous != "" && !replace {
+		return tagReply{content: fmt.Sprintf("`%s%s` already adds to %s. Use `/tag set` to change its playlist.",
+			c.Prefix, name, playlistName(c, previous)), private: true}
 	}
 	msg := fmt.Sprintf("`%s%s` now adds songs to %s, and `%s%s` adds them to the default playlist too.",
 		c.Prefix, name, playlistName(c, playlistID), trigger.PlusPrefix, name)
