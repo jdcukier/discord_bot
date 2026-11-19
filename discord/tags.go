@@ -648,14 +648,12 @@ func aliasTag(store TagStore, rawExisting, rawNames string) tagReply {
 func skippedAliases(c *trigger.Config, skipped []trigger.SkippedAlias, name func(id string) string) []string {
 	type group struct {
 		reason     trigger.AliasSkip
-		tooLong    bool // An invalid name that's too long, which deserves its own reason
 		playlistID string
 	}
 	var groups []group
 	names := map[group][]string{}
 	for _, skip := range skipped {
-		tooLong := skip.Reason == trigger.AliasInvalid && utf8.RuneCountInString(skip.Name) > trigger.MaxNameLength
-		g := group{skip.Reason, tooLong, skip.PlaylistID}
+		g := group{skip.Reason, skip.PlaylistID}
 		if _, ok := names[g]; !ok {
 			groups = append(groups, g)
 		}
@@ -676,9 +674,8 @@ func skippedAliases(c *trigger.Config, skipped []trigger.SkippedAlias, name func
 				playlistLabel(c, g.playlistID, name(g.playlistID)), plural(one, "it", "them"))
 		case trigger.AliasInvalid:
 			reason = plural(one, "invalid name", "invalid names")
-			if g.tooLong {
-				reason = fmt.Sprintf("longer than %d characters", trigger.MaxNameLength)
-			}
+		case trigger.AliasTooLong:
+			reason = fmt.Sprintf("longer than %d characters", trigger.MaxNameLength)
 		case trigger.AliasReserved:
 			reason = "reserved for the default playlist"
 		}
@@ -721,7 +718,7 @@ func autocompleteTags(c *trigger.Config, typed string, withDefault bool) []*disc
 	for _, name := range names {
 		// Discord rejects choices over 100 characters. Tag names are shorter, but this keeps
 		// one bad tag from breaking autocomplete for everyone.
-		if !strings.Contains(name, typed) || utf8.RuneCountInString(c.Prefix+name) > maxChoiceLength {
+		if !strings.Contains(name, typed) || trigger.NameLength(c.Prefix+name) > maxChoiceLength {
 			continue
 		}
 		choices = append(choices, &discordgo.ApplicationCommandOptionChoice{Name: c.Prefix + name, Value: name})

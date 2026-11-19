@@ -24,7 +24,8 @@ const (
 	// DefaultName is the reserved trigger for the default playlist
 	DefaultName = "default"
 
-	// MaxNameLength is the most characters a tag name (without the prefix) may have
+	// MaxNameLength is the most characters a new tag name (without the prefix) may have, counted
+	// like Discord counts an option's length (see NameLength)
 	MaxNameLength = 50
 )
 

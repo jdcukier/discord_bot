@@ -274,12 +274,22 @@ func TestAliasTagNameLength(t *testing.T) {
 		"🎧 **[Untitled playlist]"+testPlaylistTarget(gymTestID)+"** — **`"+longest+"`**, `gym`\n"+
 		"-# Skipped "+cut+" (longer than 50 characters)", reply.content)
 	assert.Equal(t, map[string]string{"gym": gymTestID, longest: gymTestID}, store.Config().Tags)
+
+	// Length is counted like Discord does, so 26 letters outside the Basic Multilingual Plane are too long.
+	// Names that are too long and also invalid are just invalid.
+	wide := strings.Repeat("\U0001D41A", 26)
+	invalid := strings.Repeat("ab.", 30)
+	reply = aliasTag(store, "gym", wide+" "+invalid)
+	assert.True(t, reply.private)
+	assert.Equal(t, "No tags added to `!gym`'s playlist:\n"+
+		"- Skipped `"+wide+"` (longer than 50 characters)\n"+
+		"- Skipped `"+invalid[:trigger.MaxNameLength]+"…` (invalid name)", reply.content)
 }
 
 func TestAliasTagBlankNames(t *testing.T) {
 	store := newTestTagStore(t, map[string][]string{"gym": {gymTestID}})
 	// Names made only of backticks have nothing left to show in a code span
-	reply := aliasTag(store, "gym", "` `` a`b")
+	reply := aliasTag(store, "gym", "` `` a`b "+strings.Repeat("`", 60))
 	assert.True(t, reply.private)
 	assert.Equal(t, "No tags added to `!gym`'s playlist:\n- Skipped (blank), `ab` (invalid names)", reply.content)
 }
