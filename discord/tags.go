@@ -229,8 +229,8 @@ func tagsByPlaylist(c *trigger.Config) map[string][]string {
 	return byPlaylist
 }
 
-// playlistLine formats a playlist and its tags as in /tags, bolding the tags in bold.
-// name is the playlist's cleaned name, or "" if it isn't known. A playlist without tags says so.
+// playlistLine formats a playlist and its tags as in /tags, bolding the tags listed in bold.
+// name is the playlist's name, or "" if it isn't known. A playlist without tags says so.
 func playlistLine(c *trigger.Config, id, name string, tags, bold []string) string {
 	formatted := make([]string, len(tags))
 	for i, tag := range tags {
@@ -247,8 +247,9 @@ func playlistLine(c *trigger.Config, id, name string, tags, bold []string) strin
 }
 
 // playlistMarkdownLink formats a playlist as a masked link without an embed preview, labelled with
-// its cleaned name, or with a fallback label if name is ""
+// its name (see cleanPlaylistName), or with the /tags fallback label if the name isn't known
 func playlistMarkdownLink(c *trigger.Config, id, name string) string {
+	name = cleanPlaylistName(name)
 	if name == "" {
 		name = untitledPlaylistLabel
 		if id == c.DefaultPlaylistID {
@@ -382,6 +383,51 @@ func escapeMarkdown(s string) string {
 	return markdownEscaper.Replace(s)
 }
 
+// subtextSeparator separates the parts of a tag reply's subtext
+const subtextSeparator = " · "
+
+// tagChangeReply formats the public reply to a tag change: the header line, the playlist's line as
+// in /tags (bolding the tags listed in bold), and the non-empty subtext parts on one subtext line.
+// c must be the configuration after the change. name is the playlist's name, or "" if it isn't known.
+// The reply fits in a message: if the playlist line is too long, its last tags are left out.
+func tagChangeReply(c *trigger.Config, header, playlistID, name string, bold []string, subtext ...string) string {
+	subtext = slices.DeleteFunc(slices.Clone(subtext), func(part string) bool { return part == "" })
+	lines := []string{header, ""}
+	if len(subtext) > 0 {
+		lines = append(lines, "-# "+strings.Join(subtext, subtextSeparator))
+	}
+	budget := maxMessageLength - len(strings.Join(lines, "\n"))
+	lines[1] = fitPlaylistLine(playlistLine(c, playlistID, name, tagsByPlaylist(c)[playlistID], bold), budget)
+	return truncate(strings.Join(lines, "\n"), maxMessageLength)
+}
+
+// fitPlaylistLine shortens a playlist line to at most limit bytes by leaving out its last tags,
+// so the link and the remaining tags stay whole
+func fitPlaylistLine(line string, limit int) string {
+	const more = ", …"
+	if len(line) <= limit {
+		return line
+	}
+	tagsStart := strings.Index(line, " — ") + len(" — ")
+	if limit >= len(more) {
+		if cut := strings.LastIndex(line[:limit-len(more)+len(",")], ", "); cut >= tagsStart {
+			return line[:cut] + more
+		}
+	}
+	return truncate(line, max(limit, 0))
+}
+
+// cachedPlaylistNames returns the store's cached playlist name lookup. It returns "" for unknown names.
+func cachedPlaylistNames(store TagStore) func(id string) string {
+	names := playlistNames(store)
+	return func(id string) string {
+		if names == nil || id == "" {
+			return ""
+		}
+		return names(id)
+	}
+}
+
 // addTag handles /tag add, which only creates new tags so nobody replaces one by accident
 func addTag(store TagStore, rawName, rawPlaylist string) tagReply {
 	return changeTag(store, rawName, rawPlaylist, false)
@@ -408,6 +454,10 @@ func changeTag(store TagStore, rawName, rawPlaylist string, replace bool) tagRep
 	if replace {
 		change = store.Set
 	}
+	// The old playlist's name is read first, since it's forgotten if the change leaves it without tags
+	names := cachedPlaylistNames(store)
+	oldID := c.Tags[name]
+	oldName := names(oldID)
 	previous, err := change(name, playlistID)
 	if err != nil {
 		return tagReply{content: failure + err.Error(), private: true}
@@ -419,25 +469,44 @@ func changeTag(store TagStore, rawName, rawPlaylist string, replace bool) tagRep
 		return tagReply{content: fmt.Sprintf("`%s%s` already adds to %s. Use `/tag set` to change its playlist.",
 			c.Prefix, name, playlistName(c, previous)), private: true}
 	}
-	msg := fmt.Sprintf("`%s%s` now adds songs to %s, and `%s%s` adds them to the default playlist too.",
-		c.Prefix, name, playlistName(c, playlistID), trigger.PlusPrefix, name)
+	if previous != oldID { // Changed by someone else meanwhile
+		oldName = names(previous)
+	}
+
+	header := fmt.Sprintf("✅ **Added `%s%s`**", c.Prefix, name)
+	var subtext []string
 	if previous != "" {
-		msg += fmt.Sprintf(" It used to add to %s.", playlistName(c, previous))
+		header = fmt.Sprintf("🔁 **Moved `%s%s`**", c.Prefix, name)
+		subtext = append(subtext, "Was: "+playlistMarkdownLink(c, previous, oldName))
+	}
+	if playlistID != c.DefaultPlaylistID { // On the default playlist, both forms add to it alone
+		subtext = append(subtext, fmt.Sprintf("`%s%s` also adds to the default", trigger.PlusPrefix, name))
 	}
 	if playlistID != c.DefaultPlaylistID && !slices.Contains(slices.Collect(maps.Values(c.Tags)), playlistID) {
-		msg += "\nThe playlist must be collaborative, or everyone else's songs can't be added to it."
+		subtext = append(subtext, "Playlist must be collaborative")
 	}
-	return tagReply{content: msg, playlistID: playlistID}
+	content := tagChangeReply(store.Config(), header, playlistID, names(playlistID), []string{name}, subtext...)
+	return tagReply{content: content, playlistID: playlistID}
 }
 
 // removeTag handles /tag remove
 func removeTag(store TagStore, rawName string) tagReply {
 	c := store.Config()
 	name := normalizeTagName(c, rawName)
-	if _, err := store.Remove(name); err != nil {
+	// The playlist's name is read first, since it's forgotten if the playlist is left without tags
+	names := cachedPlaylistNames(store)
+	oldID := c.Tags[name]
+	oldName := names(oldID)
+	previous, err := store.Remove(name)
+	if err != nil {
 		return tagReply{content: "Couldn't remove the tag: " + err.Error(), private: true}
 	}
-	return tagReply{content: fmt.Sprintf("Deleted `%s%s`. Songs tagged with it now go to the default playlist.", c.Prefix, name)}
+	if previous != oldID { // Changed by someone else meanwhile
+		oldName = names(previous)
+	}
+	header := fmt.Sprintf("🗑️ **Deleted `%s%s`**", c.Prefix, name)
+	subtext := fmt.Sprintf("Songs tagged `%s%s` now go to the default playlist", c.Prefix, name)
+	return tagReply{content: tagChangeReply(store.Config(), header, previous, oldName, nil, subtext)}
 }
 
 // autocompleteTags suggests existing tag names that contain what the user has typed
