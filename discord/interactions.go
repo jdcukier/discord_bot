@@ -17,8 +17,9 @@ import (
 
 // InteractionSessionHandler handles interactions
 type InteractionSessionHandler struct {
-	appID string   // Application to register slash commands for
-	tags  TagStore // Optional; enables the tag commands
+	appID string         // Application to register slash commands for
+	tags  TagStore       // Optional; enables the tag commands
+	names *PlaylistNames // Optional; saves the names of playlists tagged with /tag
 
 	registered atomic.Bool // Whether the tag commands were registered by this process
 }
@@ -31,6 +32,14 @@ func WithTagCommands(appID string, tags TagStore) InteractionOption {
 	return func(h *InteractionSessionHandler) {
 		h.appID = appID
 		h.tags = tags
+	}
+}
+
+// WithTagPlaylistNames looks up and saves a playlist's name when /tag add or /tag set points a tag to it,
+// with the Spotify access of the user who ran the command
+func WithTagPlaylistNames(names *PlaylistNames) InteractionOption {
+	return func(h *InteractionSessionHandler) {
+		h.names = names
 	}
 }
 
@@ -250,6 +259,10 @@ func (h *InteractionSessionHandler) tagCommand(s *discordgo.Session, i *discordg
 		zap.String(zapkey.UserID, interactionUserID(i)),
 		zap.Bool(zapkey.Result, !reply.private)) // Replies contain playlist IDs, so don't log them
 	respond(s, i, reply)
+	if reply.playlistID != "" && h.names != nil {
+		// After replying, since Discord only waits 3 seconds for a reply and the name is cosmetic
+		go h.names.Refresh(context.Background(), interactionUserID(i), reply.playlistID)
+	}
 }
 
 // autocomplete suggests options while a slash command is being typed

@@ -22,7 +22,7 @@ func newTestTagStore(t *testing.T, playlists map[string][]string) *trigger.Store
 	t.Helper()
 	settings, err := trigger.New("!", defaultTestID, nil, false)
 	require.NoError(t, err)
-	store, _, err := trigger.OpenStore(filepath.Join(t.TempDir(), "tags.json"), settings, playlists)
+	store, _, err := trigger.OpenStore(filepath.Join(t.TempDir(), "tags.yaml"), settings, playlists)
 	require.NoError(t, err)
 	return store
 }

@@ -22,6 +22,21 @@ func (c *Client) playlist(ctx context.Context, api *spotify.Client, playlistID s
 	return api.GetPlaylist(ctx, spotify.ID(playlistID))
 }
 
+// FetchPlaylistName looks up a playlist's name on Spotify with a Discord user's Spotify access.
+// Unlike adding tracks, it never starts the auth flow or posts to Discord: names are cosmetic,
+// so callers just keep the name they have on errors (e.g. worker.ErrAuthRequired).
+func (c *Client) FetchPlaylistName(ctx context.Context, userID, playlistID string) (string, error) {
+	if playlistID == "" {
+		return "", fmt.Errorf("no playlist ID provided")
+	}
+	api := c.spotifyClientForUser(userID)
+	pl, err := api.GetPlaylist(ctx, spotify.ID(playlistID), spotify.Fields("name"))
+	if err != nil {
+		return "", log.RedactErr(err, playlistID)
+	}
+	return pl.Name, nil
+}
+
 // allPlaylistTrackIDs fetches all track IDs in a playlist, paginating through every page.
 func (c *Client) allPlaylistTrackIDs(ctx context.Context, api *spotify.Client, playlistID string) (map[spotify.ID]struct{}, error) {
 	if playlistID == "" {

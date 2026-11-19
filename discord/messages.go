@@ -58,6 +58,7 @@ type MessageHandler struct {
 	playlistAdder PlaylistAdder
 	actionIDs     ChannelActions // Map of channel IDs to actions to take for that channel
 	triggers      TriggerSource  // Optional playlist triggers; nil adds to the default playlist only
+	names         *PlaylistNames // Optional; refreshes the names of playlists songs are added to
 }
 
 // TriggerSource provides the current playlist triggers, which may change while the bot runs
@@ -72,6 +73,14 @@ type MessageHandlerOption func(*MessageHandler)
 func WithPlaylistTriggers(triggers TriggerSource) MessageHandlerOption {
 	return func(h *MessageHandler) {
 		h.triggers = triggers
+	}
+}
+
+// WithPlaylistNames refreshes the saved names of tagged playlists when songs are added to them,
+// at most once per playlist an hour, with the Spotify access of the user who posted the song
+func WithPlaylistNames(names *PlaylistNames) MessageHandlerOption {
+	return func(h *MessageHandler) {
+		h.names = names
 	}
 }
 
@@ -162,7 +171,7 @@ func (h *MessageHandler) Handle(s *discordgo.Session, m *discordgo.MessageCreate
 			reply := &Reply{session: s, event: m}
 			actions = append(actions, reply)
 		case ActionAddTracksToPlaylist:
-			addTracksToPlaylist := &AddTracksToPlaylist{session: s, event: m, playlistAdder: h.playlistAdder, triggers: triggers}
+			addTracksToPlaylist := &AddTracksToPlaylist{session: s, event: m, playlistAdder: h.playlistAdder, triggers: triggers, names: h.names}
 			actions = append(actions, addTracksToPlaylist)
 		default:
 			logger.With(zap.String(zapkey.Action, actionID)).Error("received unknown action", fields...)
@@ -234,6 +243,7 @@ type AddTracksToPlaylist struct {
 	event         *discordgo.MessageCreate
 	playlistAdder PlaylistAdder
 	triggers      *trigger.Config
+	names         *PlaylistNames // Optional
 }
 
 // String returns a string representation of the action
@@ -280,6 +290,9 @@ func (a *AddTracksToPlaylist) Execute(ctx context.Context) {
 		logger.With(zap.Error(err)).Error("Failed to add tracks to playlist", fields...)
 		return
 	}
+
+	// Spotify access is per user, so names are refreshed with the access of whoever adds songs
+	a.names.RefreshStale(ctx, a.event.Author.ID, playlistIDs)
 }
 
 // playlistIDs returns the playlists to add the message's tracks to.
