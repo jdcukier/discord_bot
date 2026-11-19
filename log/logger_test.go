@@ -3,6 +3,7 @@ package log
 import (
 	"errors"
 	"fmt"
+	"regexp"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -26,4 +27,16 @@ func TestRedactErr(t *testing.T) {
 
 	// Unchanged errors are returned as is
 	assert.Same(t, base, RedactErr(base, "0123456789abcdefghijkl"))
+}
+
+func TestRedactMatches(t *testing.T) {
+	pattern := regexp.MustCompile(`[0-9A-Za-z]{22,}`)
+	base := errors.New("base")
+	err := fmt.Errorf(`invalid tag name "0123456789abcdefghijkl" and ABCDEFGHIJKLMNOPQRSTUV: %w`, base)
+	redacted := RedactMatches(err, pattern)
+	assert.Equal(t, `invalid tag name "0123…" and ABCD…: base`, redacted.Error())
+	assert.ErrorIs(t, redacted, base)
+
+	assert.Same(t, base, RedactMatches(base, pattern))
+	assert.NoError(t, RedactMatches(nil, pattern))
 }

@@ -88,7 +88,7 @@ func LoadSettings() (*Config, error) {
 func LoadSeed() (map[string][]string, error) {
 	playlists, err := ParsePlaylists(os.Getenv(envvar.SpotifyPlaylistTriggers))
 	if err != nil {
-		return nil, fmt.Errorf("invalid %s: %w", envvar.SpotifyPlaylistTriggers, err)
+		return nil, redactIDs(fmt.Errorf("invalid %s: %w", envvar.SpotifyPlaylistTriggers, err))
 	}
 	return playlists, nil
 }

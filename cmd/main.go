@@ -183,6 +183,11 @@ func loadPlaylistTags() (discord.TriggerSource, discord.TagStore) {
 	if path == "" {
 		path = defaultTagsFile
 	}
+	if storePath := trigger.StorePath(path); storePath != path {
+		logger.Warn("Saving playlist tags as YAML next to the JSON file; update "+envvar.SpotifyTagsFile+" to the YAML path",
+			zap.String(zapkey.Path, storePath), zap.String(zapkey.Path+"_json", path))
+		path = storePath
+	}
 	// Tags saved by earlier versions in a JSON file are converted, so that counts as a file too
 	_, statErr := os.Stat(path)
 	_, legacyStatErr := os.Stat(trigger.LegacyPath(path))
@@ -217,14 +222,7 @@ func loadPlaylistTags() (discord.TriggerSource, discord.TagStore) {
 		return staticTriggers{fallback}, nil
 	}
 	logDroppedPlaylists(store.Config(), result.Dropped)
-	if result.Backup != "" {
-		logger.Info("Converted the playlist tags file to YAML and backed up the JSON file",
-			zap.String(zapkey.Path, result.Backup))
-	}
-	if result.SaveErr != nil {
-		logger.Warn("Failed to save the converted playlist tags file; using the converted tags anyway and retrying on the next change",
-			zap.String(zapkey.Path, path), zap.Error(result.SaveErr))
-	}
+	logStoreMigration(path, result)
 	switch {
 	case result.Created && len(seed) > 0:
 		logger.Info("Created the playlist tags file from "+envvar.SpotifyPlaylistTriggers, zap.String(zapkey.Path, path))
@@ -236,6 +234,32 @@ func loadPlaylistTags() (discord.TriggerSource, discord.TagStore) {
 	}
 	logTriggers(store.Config())
 	return store, store
+}
+
+// logStoreMigration logs what OpenStore did with the JSON tags file of earlier versions, if anything
+func logStoreMigration(path string, result trigger.OpenResult) {
+	switch {
+	case result.YAMLBackup != "":
+		logger.Warn("The JSON playlist tags file is newer than the YAML file, e.g. after a rollback; "+
+			"converted it again and backed up the YAML file",
+			zap.String(zapkey.Path, path),
+			zap.String(zapkey.Path+"_yaml_backup", result.YAMLBackup),
+			zap.String(zapkey.Path+"_json_backup", result.Backup))
+	case result.Converted && result.Backup != "":
+		logger.Info("Converted the playlist tags file to YAML and backed up the JSON file",
+			zap.String(zapkey.Path, path), zap.String(zapkey.Path+"_json_backup", result.Backup))
+	case result.Backup != "":
+		logger.Info("Backed up the JSON playlist tags file left over from an interrupted conversion; using the YAML file",
+			zap.String(zapkey.Path, path), zap.String(zapkey.Path+"_json_backup", result.Backup))
+	}
+	if result.SaveErr != nil {
+		logger.Warn("Failed to save the converted playlist tags file; using the converted tags anyway and retrying on the next change",
+			zap.String(zapkey.Path, path), zap.Error(result.SaveErr))
+	}
+	if result.BackupErr != nil {
+		logger.Warn("Problem backing up a playlist tags file; using the YAML file anyway",
+			zap.String(zapkey.Path, path), zap.Error(result.BackupErr))
+	}
 }
 
 // logDroppedPlaylists warns about tags that lost playlists when tags became one playlist each.

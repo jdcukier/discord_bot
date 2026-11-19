@@ -17,12 +17,13 @@ const testLink = "https://open.spotify.com/track/6adFsinyuxpOTkN4QmwwOt?si=3f33d
 type fakePlaylistAdder struct {
 	calls     [][]string // Playlist IDs of each call
 	trackURLs [][]string // Track URLs of each call
+	err       error      // Returned by each call
 }
 
 func (f *fakePlaylistAdder) AddTracksToPlaylist(_ context.Context, _ string, trackURLs []string, playlistIDs ...string) error {
 	f.calls = append(f.calls, playlistIDs)
 	f.trackURLs = append(f.trackURLs, trackURLs)
-	return nil
+	return f.err
 }
 
 func executeAddTracks(t *testing.T, triggers *trigger.Config, content string) *fakePlaylistAdder {

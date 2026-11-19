@@ -73,21 +73,35 @@ type Store struct {
 	config atomic.Pointer[Config]
 	names  atomic.Pointer[map[string]string] // Tagged playlists' IDs to their names on Spotify
 
-	legacy string // JSON file the tags were converted from, moved aside once the YAML file is saved
-	backup string // Where legacy was moved
+	legacy    string // JSON file the tags were converted from, moved aside on the next successful save
+	backup    string // Where legacy was moved
+	backupErr error  // Why legacy couldn't be moved aside (or the move flushed) on the last save
 }
 
 // OpenResult describes what OpenStore did besides loading the tags
 type OpenResult struct {
-	Created bool                // No tags file existed, so it was created from the seed
-	Dropped map[string][]string // Tags converted from several playlists to one, and the playlists they lost
-	Backup  string              // Where the JSON file was moved, once it was converted to YAML
-	SaveErr error               // Converting the JSON file worked but saving it (or moving it aside) didn't; it's retried on the next change
+	Created    bool                // No tags file existed, so it was created from the seed
+	Converted  bool                // The tags were converted from the JSON file of earlier versions
+	Dropped    map[string][]string // Tags converted from several playlists to one, and the playlists they lost
+	Backup     string              // Where the JSON file was moved: after converting it, or if it was left over from an interrupted conversion
+	YAMLBackup string              // Where the YAML file was moved before converting a newer JSON file, e.g. after a rollback
+	SaveErr    error               // Converting the JSON file worked but saving the YAML file didn't; it's retried on the next change
+	BackupErr  error               // The YAML file is in use, but the JSON file couldn't be moved aside (retried on the next change) or the move flushed
 }
 
-// BackupSuffix is added to the path of a JSON tags file once it's converted to YAML.
-// If that backup already exists (e.g. after a rollback and a second upgrade), a timestamp is added too.
+// BackupSuffix is added to the path of a tags file to back it up: the JSON file once it's converted
+// to YAML, and the YAML file if a newer JSON file replaces it. If that backup already exists
+// (e.g. after a rollback and a second upgrade), a timestamp is added too.
 const BackupSuffix = ".bak"
+
+// StorePath returns the YAML file to use for SPOTIFY_TAGS_FILE: path itself or, for a .json
+// path set for an earlier version, the .yaml file next to it, so the JSON file is converted
+func StorePath(path string) string {
+	if strings.EqualFold(filepath.Ext(path), ".json") {
+		return strings.TrimSuffix(path, filepath.Ext(path)) + ".yaml"
+	}
+	return path
+}
 
 // LegacyPath returns where earlier versions kept the tags, given the YAML file's path:
 // the same path with a .json extension, e.g. /data/playlist-tags.json for /data/playlist-tags.yaml
@@ -95,21 +109,58 @@ func LegacyPath(path string) string {
 	return strings.TrimSuffix(path, filepath.Ext(path)) + ".json"
 }
 
-// OpenStore loads the tags saved at path, using settings for everything else
-// (settings' own tags are ignored). If that file doesn't exist yet, the JSON file of
-// earlier versions (see LegacyPath) is converted to it and moved aside with BackupSuffix.
-// If neither exists, the file is created from seed, the tags in SPOTIFY_PLAYLIST_TRIGGERS.
+// idRunRegex matches what may be a playlist ID: a run of at least 22 base-62 characters
+var idRunRegex = regexp.MustCompile(`[0-9A-Za-z]{22,}`)
+
+// redactIDs shortens anything that looks like a playlist ID in err's message. Errors about
+// the tags file and the seed are logged, and IDs can end up anywhere in them (e.g. an ID
+// listed as a tag, or used as a key), so they're redacted wholesale rather than one by one.
+func redactIDs(err error) error {
+	return log.RedactMatches(err, idRunRegex)
+}
+
+// OpenStore loads the tags saved in the YAML file at StorePath(path), using settings for everything
+// else (settings' own tags are ignored). The JSON file of earlier versions (see LegacyPath) is
+// converted to YAML and moved aside with BackupSuffix if the YAML file doesn't exist yet, or if the
+// JSON file is newer, e.g. after a rollback to an older version; the YAML file is backed up first then.
+// A JSON file older than the YAML file is left over from an interrupted conversion, so it's just moved aside.
+// If neither file exists, the YAML file is created from seed, the tags in SPOTIFY_PLAYLIST_TRIGGERS.
 // Tags with several playlists, in the oldest JSON format or the seed, are converted with ToTags.
+// Anything that looks like a playlist ID is shortened in the errors, since they're logged.
 func OpenStore(path string, settings *Config, seed map[string][]string) (*Store, OpenResult, error) {
+	s, result, err := openStore(StorePath(path), settings, seed)
+	result.SaveErr = redactIDs(result.SaveErr)
+	result.BackupErr = redactIDs(result.BackupErr)
+	return s, result, redactIDs(err)
+}
+
+// openStore is OpenStore without redacting errors
+func openStore(path string, settings *Config, seed map[string][]string) (*Store, OpenResult, error) {
 	var result OpenResult
 	if settings == nil {
 		return nil, result, fmt.Errorf("settings are nil")
 	}
 	s := &Store{path: path}
 
-	data, err := os.ReadFile(path)
-	switch {
-	case err == nil:
+	legacyPath := LegacyPath(path)
+	info, err := os.Stat(path)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return nil, result, fmt.Errorf("failed to read %s: %w", path, err)
+	}
+	legacyInfo, legacyErr := os.Stat(legacyPath)
+	if legacyErr != nil && !errors.Is(legacyErr, os.ErrNotExist) {
+		return nil, result, fmt.Errorf("failed to read %s: %w", legacyPath, legacyErr)
+	}
+	exists, legacyExists := err == nil, legacyErr == nil
+
+	if legacyExists && (!exists || legacyInfo.ModTime().After(info.ModTime())) {
+		return s.convert(settings, legacyPath, exists)
+	}
+	if exists {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return nil, result, fmt.Errorf("failed to read %s: %w", path, err)
+		}
 		tags, names, err := parseStoreFile(data)
 		if err != nil {
 			return nil, result, fmt.Errorf("invalid tags in %s: %w", path, err)
@@ -117,33 +168,13 @@ func OpenStore(path string, settings *Config, seed map[string][]string) (*Store,
 		if err := s.init(settings, tags, names); err != nil {
 			return nil, result, fmt.Errorf("invalid tags in %s: %w", path, err)
 		}
-		return s, result, nil
-	case !errors.Is(err, os.ErrNotExist):
-		return nil, result, fmt.Errorf("failed to read %s: %w", path, err)
-	}
-
-	if legacyPath := LegacyPath(path); legacyPath != path {
-		data, err := os.ReadFile(legacyPath)
-		switch {
-		case err == nil:
-			var tags map[string]string
-			tags, result.Dropped, err = parseJSONStoreFile(data, settings.DefaultPlaylistID)
-			if err != nil {
-				return nil, OpenResult{}, fmt.Errorf("invalid tags in %s: %w", legacyPath, err)
-			}
-			if err := s.init(settings, tags, nil); err != nil {
-				return nil, OpenResult{}, fmt.Errorf("failed to convert %s: %w", legacyPath, err)
-			}
-			// The converted tags work even if they can't be saved yet; the JSON file stays until they are
+		if legacyExists {
+			// Left over from a conversion interrupted between saving the YAML file and moving the JSON file aside
 			s.legacy = legacyPath
-			if result.SaveErr = s.save(tags, nil); result.SaveErr == nil {
-				result.SaveErr = s.backupLegacy()
-			}
+			result.BackupErr = s.backupLegacy()
 			result.Backup = s.backup
-			return s, result, nil
-		case !errors.Is(err, os.ErrNotExist):
-			return nil, result, fmt.Errorf("failed to read %s: %w", legacyPath, err)
 		}
+		return s, result, nil
 	}
 
 	seed, err = NormalizePlaylists(seed)
@@ -159,6 +190,48 @@ func OpenStore(path string, settings *Config, seed map[string][]string) (*Store,
 		return nil, OpenResult{}, err
 	}
 	result.Created = true
+	return s, result, nil
+}
+
+// convert loads the tags from the JSON file of earlier versions and saves them as YAML.
+// If replace is true, the YAML file exists but is older than the JSON file, which an older version
+// of the bot changed after a rollback, so the YAML file is backed up first, keeping its playlist names.
+func (s *Store) convert(settings *Config, legacyPath string, replace bool) (*Store, OpenResult, error) {
+	var result OpenResult
+	data, err := os.ReadFile(legacyPath)
+	if err != nil {
+		return nil, result, fmt.Errorf("failed to read %s: %w", legacyPath, err)
+	}
+	tags, dropped, err := parseJSONStoreFile(data, settings.DefaultPlaylistID)
+	if err != nil {
+		return nil, result, fmt.Errorf("invalid tags in %s: %w", legacyPath, err)
+	}
+	var names map[string]string
+	if replace {
+		// Names are cosmetic, so an invalid YAML file just doesn't provide any
+		if data, err := os.ReadFile(s.path); err == nil {
+			_, names, _ = parseStoreFile(data)
+		}
+	}
+	if err := s.init(settings, tags, names); err != nil {
+		return nil, result, fmt.Errorf("failed to convert %s: %w", legacyPath, err)
+	}
+	if replace {
+		result.YAMLBackup, err = backupFile(s.path)
+		if result.YAMLBackup == "" {
+			return nil, result, fmt.Errorf("failed to back up %s before converting the newer %s: %w", s.path, legacyPath, err)
+		}
+		result.BackupErr = err // Backed up, but the backup may not be flushed yet
+	}
+	result.Converted = true
+	result.Dropped = dropped
+
+	// The converted tags work even if they can't be saved yet; the JSON file stays until they are
+	s.legacy = legacyPath
+	if result.SaveErr = s.save(tags, *s.names.Load()); result.SaveErr == nil {
+		result.BackupErr = errors.Join(result.BackupErr, s.backupErr)
+	}
+	result.Backup = s.backup
 	return s, result, nil
 }
 
@@ -258,12 +331,12 @@ func NormalizePlaylists(playlists map[string][]string) (map[string][]string, err
 	out := make(map[string][]string, len(playlists))
 	for name, ids := range playlists {
 		if err := ValidateName(name); err != nil {
-			return nil, err
+			return nil, redactIDs(err)
 		}
 		for _, raw := range ids {
 			id, err := ExtractPlaylistID(raw)
 			if err != nil {
-				return nil, fmt.Errorf("tag %q: %w", name, err)
+				return nil, redactIDs(fmt.Errorf("tag %q: %w", name, err))
 			}
 			out[name] = appendUnique(out[name], id)
 		}
@@ -371,11 +444,6 @@ func (s *Store) update(current *Config, tags map[string]string) error {
 	}
 	s.config.Store(config)
 	s.names.Store(&names)
-	if s.legacy != "" {
-		// Retried on the next change. Failing again only leaves the JSON file behind,
-		// since the YAML file takes precedence once it exists.
-		_ = s.backupLegacy()
-	}
 	return nil
 }
 
@@ -418,8 +486,22 @@ func encode(tags, names map[string]string) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-// save writes the tags to disk atomically, so a crash never leaves a half-written file
+// save writes the tags to disk, then moves aside the JSON file they were converted from, if that's
+// still pending. The YAML file is in use once it's written, so failing to move the JSON file isn't
+// a failed save: it's recorded in s.backupErr and retried on the next save.
 func (s *Store) save(tags, names map[string]string) error {
+	if err := s.write(tags, names); err != nil {
+		return err
+	}
+	s.backupErr = nil
+	if s.legacy != "" {
+		s.backupErr = s.backupLegacy()
+	}
+	return nil
+}
+
+// write writes the tags to disk atomically, so a crash never leaves a half-written file
+func (s *Store) write(tags, names map[string]string) error {
 	data, err := encode(tags, names)
 	if err != nil {
 		return fmt.Errorf("failed to encode tags: %w", err)
@@ -457,21 +539,32 @@ func (s *Store) save(tags, names map[string]string) error {
 
 // backupLegacy moves the JSON file the tags were converted from aside once the YAML file is saved,
 // so it's clear which file is in use, while keeping playlists dropped by the conversion and what's
-// needed to roll back to an older version of the bot. Existing backups are never overwritten.
+// needed to roll back to an older version of the bot. Once it's moved, it's no longer pending,
+// even if flushing the move failed.
 func (s *Store) backupLegacy() error {
-	path := s.legacy + BackupSuffix
-	if _, err := os.Lstat(path); err == nil {
-		path = fmt.Sprintf("%s.%s%s", s.legacy, time.Now().UTC().Format("20060102T150405.000000000Z"), BackupSuffix)
+	path, err := backupFile(s.legacy)
+	if path != "" {
+		s.legacy = ""
+		s.backup = path
 	}
-	if err := os.Rename(s.legacy, path); err != nil {
-		return fmt.Errorf("failed to back up the old tags file: %w", err)
+	return err
+}
+
+// backupFile renames path by adding BackupSuffix, along with a timestamp if that backup already
+// exists (e.g. from an earlier upgrade, before a rollback), so backups are never overwritten.
+// It returns the backup's path once the rename succeeded, along with any error flushing it.
+func backupFile(path string) (string, error) {
+	backup := path + BackupSuffix
+	if _, err := os.Lstat(backup); !errors.Is(err, os.ErrNotExist) {
+		backup = fmt.Sprintf("%s.%s%s", path, time.Now().UTC().Format("20060102T150405.000000000Z"), BackupSuffix)
 	}
-	if err := syncDir(filepath.Dir(path)); err != nil {
-		return fmt.Errorf("failed to back up the old tags file: %w", err)
+	if err := os.Rename(path, backup); err != nil {
+		return "", fmt.Errorf("failed to back up %s: %w", path, err)
 	}
-	s.legacy = ""
-	s.backup = path
-	return nil
+	if err := syncDir(filepath.Dir(backup)); err != nil {
+		return backup, fmt.Errorf("backed up %s to %s but failed to flush it to disk: %w", path, backup, err)
+	}
+	return backup, nil
 }
 
 // syncDir flushes a directory's entries to disk

@@ -2,6 +2,7 @@ package discord
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -15,6 +16,7 @@ import (
 	"discordbot/log"
 	"discordbot/spotify/track"
 	"discordbot/spotify/trigger"
+	"discordbot/spotify/worker"
 	"discordbot/utils/ctxutil"
 )
 
@@ -286,13 +288,21 @@ func (a *AddTracksToPlaylist) Execute(ctx context.Context) {
 		zap.Strings(zapkey.PlaylistIDs, log.RedactIDs(playlistIDs)),
 	)
 
-	if err := a.playlistAdder.AddTracksToPlaylist(ctx, a.event.Author.ID, trackURLs, playlistIDs...); err != nil {
+	err := a.playlistAdder.AddTracksToPlaylist(ctx, a.event.Author.ID, trackURLs, playlistIDs...)
+	switch {
+	case errors.Is(err, worker.ErrAuthPending):
+		logger.Info("Tracks will be added once the user connects Spotify", fields...)
+		return
+	case err != nil:
 		logger.With(zap.Error(err)).Error("Failed to add tracks to playlist", fields...)
 		return
 	}
 
-	// Spotify access is per user, so names are refreshed with the access of whoever adds songs
-	a.names.RefreshStale(ctx, a.event.Author.ID, playlistIDs)
+	// Spotify access is per user, so names are refreshed with the access of whoever adds songs.
+	// In the background, since lookups can take a while; each one has its own timeout.
+	if a.names != nil {
+		go a.names.RefreshStale(context.WithoutCancel(ctx), a.event.Author.ID, playlistIDs)
+	}
 }
 
 // playlistIDs returns the playlists to add the message's tracks to.

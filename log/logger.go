@@ -4,6 +4,7 @@ package log
 import (
 	"context"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"unicode/utf8"
@@ -84,6 +85,19 @@ func RedactErr(err error, ids ...string) error {
 			msg = strings.ReplaceAll(msg, id, RedactID(id))
 		}
 	}
+	if msg == err.Error() {
+		return err
+	}
+	return &redactedError{err: err, msg: msg}
+}
+
+// RedactMatches returns err with every match of pattern in its message shortened by RedactID,
+// for errors that may contain IDs without knowing which ones
+func RedactMatches(err error, pattern *regexp.Regexp) error {
+	if err == nil {
+		return nil
+	}
+	msg := pattern.ReplaceAllStringFunc(err.Error(), RedactID)
 	if msg == err.Error() {
 		return err
 	}

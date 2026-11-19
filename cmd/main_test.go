@@ -70,3 +70,18 @@ func TestLoadPlaylistTagsConvertsJSONFile(t *testing.T) {
 	assert.FileExists(t, jsonPath+".bak")
 	assert.NoFileExists(t, jsonPath)
 }
+
+func TestLoadPlaylistTagsJSONPath(t *testing.T) {
+	// SPOTIFY_TAGS_FILE still points to the JSON file of earlier versions
+	path := setTagEnv(t, "")
+	jsonPath := filepath.Join(filepath.Dir(path), "tags.json")
+	t.Setenv(envvar.SpotifyTagsFile, jsonPath)
+	require.NoError(t, os.WriteFile(jsonPath, []byte(`{"tags": {"gym": "`+testPlaylistID+`"}}`), 0o600))
+
+	triggers, tags := loadPlaylistTags()
+	require.NotNil(t, triggers)
+	require.NotNil(t, tags)
+	assert.Equal(t, map[string]string{"gym": testPlaylistID}, triggers.Config().Tags)
+	assert.FileExists(t, path, "saved as YAML next to it")
+	assert.NoFileExists(t, jsonPath)
+}

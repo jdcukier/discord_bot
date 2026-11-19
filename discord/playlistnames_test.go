@@ -3,13 +3,16 @@ package discord
 import (
 	"context"
 	"errors"
+	"slices"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/bwmarrin/discordgo"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"discordbot/spotify/trigger"
 	"discordbot/spotify/worker"
 )
 
@@ -19,16 +22,52 @@ type fakeNameFetcher struct {
 	names map[string]string
 	err   error
 	calls []string // Playlist IDs looked up
+
+	wait map[int]chan struct{} // Calls (counted from 0) that block until their channel is closed
 }
 
 func (f *fakeNameFetcher) FetchPlaylistName(_ context.Context, _, playlistID string) (string, error) {
 	f.mu.Lock()
-	defer f.mu.Unlock()
+	call := len(f.calls)
 	f.calls = append(f.calls, playlistID)
-	if f.err != nil {
-		return "", f.err
+	name, err := f.names[playlistID], f.err
+	wait := f.wait[call]
+	f.mu.Unlock()
+	if wait != nil {
+		<-wait
 	}
-	return f.names[playlistID], nil
+	return name, err
+}
+
+// lookups returns the playlist IDs looked up so far
+func (f *fakeNameFetcher) lookups() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.calls)
+}
+
+func TestPlaylistNamesLastLookupWins(t *testing.T) {
+	store := newTestTagStore(t, map[string][]string{"gym": {gymTestID}})
+	release := make(chan struct{})
+	fetcher := &fakeNameFetcher{names: map[string]string{gymTestID: "Old"}, wait: map[int]chan struct{}{0: release}}
+	names := NewPlaylistNames(fetcher, store)
+
+	// The first lookup gets the old name but finishes last
+	done := make(chan struct{})
+	go func() {
+		names.Refresh(context.Background(), "user-id", gymTestID)
+		close(done)
+	}()
+	require.Eventually(t, func() bool { return len(fetcher.lookups()) == 1 }, time.Second, time.Millisecond)
+	fetcher.mu.Lock()
+	fetcher.names[gymTestID] = "New"
+	fetcher.mu.Unlock()
+	names.Refresh(context.Background(), "user-id", gymTestID)
+	assert.Equal(t, "New", store.PlaylistName(gymTestID))
+
+	close(release)
+	<-done
+	assert.Equal(t, "New", store.PlaylistName(gymTestID))
 }
 
 func TestPlaylistNamesRefresh(t *testing.T) {
@@ -112,7 +151,9 @@ func TestSetTagLooksUpName(t *testing.T) {
 	assert.Equal(t, "Chill", store.PlaylistName(chillTestID))
 }
 
-func TestAddTracksRefreshesPlaylistNames(t *testing.T) {
+// executeAddTracksWithNames adds a song tagged +gym, with addErr as the adder's result
+func executeAddTracksWithNames(t *testing.T, addErr error) (*fakeNameFetcher, *trigger.Store) {
+	t.Helper()
 	store := newTestTagStore(t, map[string][]string{"gym": {gymTestID}})
 	fetcher := &fakeNameFetcher{names: map[string]string{gymTestID: "Gym"}}
 	action := &AddTracksToPlaylist{
@@ -121,11 +162,25 @@ func TestAddTracksRefreshesPlaylistNames(t *testing.T) {
 			Content: testLink + " +gym",
 			Author:  &discordgo.User{ID: "user-id"},
 		}},
-		playlistAdder: &fakePlaylistAdder{},
+		playlistAdder: &fakePlaylistAdder{err: addErr},
 		triggers:      store.Config(),
 		names:         NewPlaylistNames(fetcher, store),
 	}
 	action.Execute(context.Background())
-	assert.Equal(t, []string{gymTestID}, fetcher.calls, "the default playlist has no tags")
-	assert.Equal(t, "Gym", store.PlaylistName(gymTestID))
+	return fetcher, store
+}
+
+func TestAddTracksRefreshesPlaylistNames(t *testing.T) {
+	// In the background, so it doesn't hold up the message handler
+	fetcher, store := executeAddTracksWithNames(t, nil)
+	assert.Eventually(t, func() bool { return store.PlaylistName(gymTestID) == "Gym" }, time.Second, time.Millisecond)
+	assert.Equal(t, []string{gymTestID}, fetcher.lookups(), "the default playlist has no tags")
+}
+
+func TestAddTracksSkipsPlaylistNamesUnlessAdded(t *testing.T) {
+	// Queued until the user connects Spotify, or failed: a lookup would fail too, or use up the hourly one
+	for _, err := range []error{worker.ErrAuthPending, errors.New("spotify is down")} {
+		fetcher, _ := executeAddTracksWithNames(t, err)
+		assert.Never(t, func() bool { return len(fetcher.lookups()) > 0 }, 50*time.Millisecond, time.Millisecond, err)
+	}
 }

@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -197,48 +198,121 @@ func TestOpenStoreConvertsJSONFile(t *testing.T) {
 	}
 }
 
-func TestOpenStorePrefersYAMLFile(t *testing.T) {
+// setModTime sets a file's modification time relative to now
+func setModTime(t *testing.T, path string, age time.Duration) {
+	t.Helper()
+	when := time.Now().Add(-age)
+	require.NoError(t, os.Chtimes(path, when, when))
+}
+
+func TestOpenStoreFinishesInterruptedConversion(t *testing.T) {
+	// The bot stopped between saving the YAML file and moving the JSON file aside
 	dir := t.TempDir()
 	path := filepath.Join(dir, "tags.yaml")
 	jsonPath := filepath.Join(dir, "tags.json")
-	require.NoError(t, os.WriteFile(path, []byte("playlists:\n  - id: "+gymID+"\n    tags: [gym]\n"), 0o600))
-	require.NoError(t, os.WriteFile(jsonPath, []byte(`{"tags": {"relax": "`+chillID+`"}}`), 0o600))
+	legacy := `{"tags": {"gym": "` + gymID + `"}}`
+	require.NoError(t, os.WriteFile(path, []byte("playlists:\n  - id: "+gymID+"\n    tags: [gym, workout]\n"), 0o600))
+	require.NoError(t, os.WriteFile(jsonPath, []byte(legacy), 0o600))
+	setModTime(t, jsonPath, time.Hour)
 
 	store, result := openTestStore(t, path, nil)
-	assert.Empty(t, result.Backup)
+	assert.False(t, result.Converted)
+	assert.Empty(t, result.YAMLBackup)
+	require.NoError(t, result.BackupErr)
+	assert.Equal(t, jsonPath+BackupSuffix, result.Backup)
+	assert.Equal(t, map[string]string{"gym": gymID, "workout": gymID}, store.Config().Tags, "the YAML file is used")
+	assert.Equal(t, legacy, readFile(t, jsonPath+BackupSuffix))
+	assert.NoFileExists(t, jsonPath)
+}
+
+func TestOpenStoreConvertsNewerJSONFile(t *testing.T) {
+	// Upgrade, roll back by restoring the JSON backup, change tags on the older version, upgrade again
+	dir := t.TempDir()
+	path := filepath.Join(dir, "tags.yaml")
+	jsonPath := filepath.Join(dir, "tags.json")
+	require.NoError(t, os.WriteFile(jsonPath, []byte(`{"tags": {"gym": "`+gymID+`"}}`), 0o600))
+	store, result := openTestStore(t, path, nil)
+	require.Equal(t, jsonPath+BackupSuffix, result.Backup)
+	require.NoError(t, store.SetPlaylistName(gymID, "Gym"))
+	upgraded := readFile(t, path)
+	setModTime(t, path, time.Hour)
+
+	rolledBack := `{"tags": {"gym": "` + gymID + `", "relax": "` + chillID + `"}}`
+	require.NoError(t, os.WriteFile(jsonPath, []byte(rolledBack), 0o600))
+
+	store, result = openTestStore(t, path, nil)
+	assert.True(t, result.Converted)
+	require.NoError(t, result.SaveErr)
+	require.NoError(t, result.BackupErr)
+	assert.Equal(t, map[string]string{"gym": gymID, "relax": chillID}, store.Config().Tags, "the rollback's changes are kept")
+	assert.Equal(t, "Gym", store.PlaylistName(gymID), "names of playlists still tagged are kept")
+
+	// Both earlier files are backed up, without overwriting the first JSON backup
+	assert.Equal(t, path+BackupSuffix, result.YAMLBackup)
+	assert.Equal(t, upgraded, readFile(t, result.YAMLBackup))
+	assert.NotEqual(t, jsonPath+BackupSuffix, result.Backup)
+	assert.Equal(t, rolledBack, readFile(t, result.Backup))
+	assert.NoFileExists(t, jsonPath)
+	assert.Contains(t, readFile(t, path), "      - relax\n")
+}
+
+func TestOpenStoreJSONPath(t *testing.T) {
+	// SPOTIFY_TAGS_FILE still set to the JSON file of earlier versions
+	dir := t.TempDir()
+	jsonPath := filepath.Join(dir, "tags.json")
+	require.NoError(t, os.WriteFile(jsonPath, []byte(`{"tags": {"gym": "`+gymID+`"}}`), 0o600))
+	assert.Equal(t, filepath.Join(dir, "tags.yaml"), StorePath(jsonPath))
+	assert.Equal(t, "tags.yaml", StorePath("tags.yaml"))
+
+	store, result := openTestStore(t, jsonPath, nil)
+	assert.True(t, result.Converted)
+	assert.Equal(t, jsonPath+BackupSuffix, result.Backup)
 	assert.Equal(t, map[string]string{"gym": gymID}, store.Config().Tags)
-	assert.FileExists(t, jsonPath, "left alone")
+	assert.FileExists(t, filepath.Join(dir, "tags.yaml"))
+
+	reopened, _ := openTestStore(t, jsonPath, nil)
+	assert.Equal(t, store.Config().Tags, reopened.Config().Tags)
 }
 
 func TestOpenStoreConvertsReadOnlyJSONFile(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("root ignores directory permissions")
 	}
-	dir := t.TempDir()
-	path := filepath.Join(dir, "tags.yaml")
-	jsonPath := filepath.Join(dir, "tags.json")
-	legacy := `{"tags": {"relax": ["` + chillID + `"]}}`
-	require.NoError(t, os.WriteFile(jsonPath, []byte(legacy), 0o600))
-	require.NoError(t, os.Chmod(dir, 0o500))
-	t.Cleanup(func() { os.Chmod(dir, 0o700) })
+	// Any later save completes the conversion
+	for name, retry := range map[string]func(*Store) error{
+		"tag change": func(s *Store) error {
+			_, err := s.Set("gym", gymID)
+			return err
+		},
+		"playlist name": func(s *Store) error { return s.SetPlaylistName(chillID, "Chill") },
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "tags.yaml")
+			jsonPath := filepath.Join(dir, "tags.json")
+			legacy := `{"tags": {"relax": ["` + chillID + `"]}}`
+			require.NoError(t, os.WriteFile(jsonPath, []byte(legacy), 0o600))
+			require.NoError(t, os.Chmod(dir, 0o500))
+			t.Cleanup(func() { os.Chmod(dir, 0o700) })
 
-	// The converted tags are used even though they can't be saved
-	store, result := openTestStore(t, path, nil)
-	require.Error(t, result.SaveErr)
-	assert.Empty(t, result.Backup, "nothing was backed up yet")
-	assert.Equal(t, map[string]string{"relax": chillID}, store.Config().Tags)
-	assert.Equal(t, legacy, readFile(t, jsonPath), "the original is untouched")
-	assert.NoFileExists(t, path)
+			// The converted tags are used even though they can't be saved
+			store, result := openTestStore(t, path, nil)
+			require.Error(t, result.SaveErr)
+			assert.Empty(t, result.Backup, "nothing was backed up yet")
+			assert.Equal(t, map[string]string{"relax": chillID}, store.Config().Tags)
+			assert.Equal(t, legacy, readFile(t, jsonPath), "the original is untouched")
+			assert.NoFileExists(t, path)
 
-	// Saving is retried on the next change, then the original is moved aside
-	require.NoError(t, os.Chmod(dir, 0o700))
-	_, err := store.Set("gym", gymID)
-	require.NoError(t, err)
-	assert.Equal(t, legacy, readFile(t, jsonPath+BackupSuffix))
-	assert.NoFileExists(t, jsonPath)
-	reopened, result := openTestStore(t, path, nil)
-	assert.Empty(t, result.Backup)
-	assert.Equal(t, map[string]string{"relax": chillID, "gym": gymID}, reopened.Config().Tags)
+			// Saving is retried on the next change, then the original is moved aside
+			require.NoError(t, os.Chmod(dir, 0o700))
+			require.NoError(t, retry(store))
+			assert.Equal(t, legacy, readFile(t, jsonPath+BackupSuffix))
+			assert.NoFileExists(t, jsonPath)
+			reopened, result := openTestStore(t, path, nil)
+			assert.Empty(t, result.Backup)
+			assert.Equal(t, store.Config().Tags, reopened.Config().Tags)
+		})
+	}
 }
 
 func TestOpenStoreCreateFails(t *testing.T) {
@@ -322,7 +396,29 @@ func TestOpenStoreInvalidYAMLFile(t *testing.T) {
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), tc.err)
 			assert.NotContains(t, err.Error(), gymID, "IDs are logged, so they're shortened")
+			assert.NotContains(t, err.Error(), chillID, "IDs are logged, so they're shortened")
 			assert.Equal(t, tc.content, readFile(t, path), "left untouched")
+		})
+	}
+}
+
+func TestOpenStoreErrorsHideIDs(t *testing.T) {
+	// IDs in the wrong place end up in parser and validation errors, which are logged
+	for name, tc := range map[string]struct{ file, content, err string }{
+		"ID as a tag":         {"tags.yaml", "playlists:\n  - id: " + gymID + "\n    tags: [" + chillID + "]\n", "invalid tag name"},
+		"ID as a key":         {"tags.yaml", "playlists:\n  - id: " + gymID + "\n    tags: [gym]\n    " + chillID + ": 1\n", "not found"},
+		"ID as a JSON tag":    {"tags.json", `{"tags": {"` + chillID + `": "` + gymID + `"}}`, "invalid tag name"},
+		"bad ID in JSON":      {"tags.json", `{"tags": {"gym": "` + chillID + `x"}}`, "isn't a valid Spotify playlist ID"},
+		"ID as a v1 JSON tag": {"tags.json", `{"tags": {"` + chillID + `": ["` + gymID + `"]}}`, "invalid tag name"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			require.NoError(t, os.WriteFile(filepath.Join(dir, tc.file), []byte(tc.content), 0o600))
+			_, _, err := OpenStore(filepath.Join(dir, "tags.yaml"), testSettings(t), nil)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tc.err)
+			assert.Contains(t, err.Error(), chillID[:4]+"…")
+			assert.NotContains(t, err.Error(), chillID)
 		})
 	}
 }
@@ -332,6 +428,16 @@ func TestOpenStoreInvalidSeed(t *testing.T) {
 	_, _, err := OpenStore(path, testSettings(t), map[string][]string{"gym": {"https://open.spotify.com/track/" + gymID}})
 	require.Error(t, err)
 	assert.NoFileExists(t, path)
+
+	// IDs in seed errors are shortened too
+	_, err = NormalizePlaylists(map[string][]string{"gym": {chillID + "x"}})
+	require.Error(t, err)
+	assert.NotContains(t, err.Error(), chillID)
+	// Names are lowercased, so use the lowercase ID
+	t.Setenv("SPOTIFY_PLAYLIST_TRIGGERS", "gym="+chillID+";"+gymID+"!=x")
+	_, err = LoadSeed()
+	require.Error(t, err)
+	assert.NotContains(t, err.Error(), gymID)
 }
 
 func TestStorePlaylistNames(t *testing.T) {

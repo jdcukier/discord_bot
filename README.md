@@ -76,6 +76,8 @@ The first time the bot starts without that file, it creates it from the `SPOTIFY
 
 Earlier versions saved tags in `playlist-tags.json`. If the YAML file doesn't exist yet but the JSON file does, the bot converts it, writes the YAML file, and renames the JSON file to `playlist-tags.json.bak` (with a timestamp added if that backup already exists). To roll back to an older version of the bot, copy the backup back over `playlist-tags.json`; tag changes made since the upgrade aren't in it.
 
+On the next upgrade, both files exist. If `playlist-tags.json` was changed more recently than `playlist-tags.yaml` (as it is after a rollback), the bot converts it again, so tag changes made while rolled back are kept: it backs up the YAML file as `playlist-tags.yaml.bak` first (keeping its playlist names), renames the JSON file to `playlist-tags.json.bak` (timestamped if that exists), and logs a warning with both paths. Otherwise the JSON file is left over from a conversion that was interrupted, so it's just renamed to `.json.bak` and the YAML file is used. If `SPOTIFY_TAGS_FILE` still points to a `.json` file, the bot uses the `.yaml` file next to it and logs a warning to update the setting.
+
 Tags used to point to several playlists. Older files and secrets are converted automatically: each tag keeps its first playlist other than the default one, since `+tag` now covers the default. The bot logs a warning for each tag that changed, listing the playlists it dropped, which can be recovered from the backup. If the file can't be read or written, the bot logs the error, falls back to the secret's tags, and `/tag` is unavailable until it's fixed. The bot logs `Loaded playlist triggers` with the tag names at startup.
 
 ### Other settings

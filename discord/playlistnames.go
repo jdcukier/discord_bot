@@ -44,6 +44,7 @@ type PlaylistNames struct {
 
 	mu        sync.Mutex
 	refreshed map[string]time.Time // When each playlist's name was last looked up
+	lookups   map[string]uint64    // How many lookups of each playlist's name have started
 }
 
 // NewPlaylistNames creates a PlaylistNames, or returns nil if names can't be looked up or saved
@@ -51,7 +52,12 @@ func NewPlaylistNames(fetcher PlaylistNameFetcher, store PlaylistNameStore) *Pla
 	if fetcher == nil || store == nil {
 		return nil
 	}
-	return &PlaylistNames{fetcher: fetcher, store: store, refreshed: make(map[string]time.Time)}
+	return &PlaylistNames{
+		fetcher:   fetcher,
+		store:     store,
+		refreshed: make(map[string]time.Time),
+		lookups:   make(map[string]uint64),
+	}
 }
 
 // Refresh looks up a tagged playlist's name and saves it
@@ -88,8 +94,14 @@ func (p *PlaylistNames) RefreshStale(ctx context.Context, userID string, playlis
 	}
 }
 
-// refresh looks up a playlist's name and saves it, keeping the saved name on errors
+// refresh looks up a playlist's name and saves it, keeping the saved name on errors.
+// If lookups of the same playlist overlap, only the last one to start is saved, so a stale name can't win.
 func (p *PlaylistNames) refresh(ctx context.Context, userID, playlistID string) {
+	p.mu.Lock()
+	p.lookups[playlistID]++
+	lookup := p.lookups[playlistID]
+	p.mu.Unlock()
+
 	fields := []zap.Field{zap.String(zapkey.PlaylistID, log.RedactID(playlistID)), zap.String(zapkey.UserID, userID)}
 	ctx, cancel := context.WithTimeout(ctx, playlistNameTimeout)
 	defer cancel()
@@ -97,6 +109,12 @@ func (p *PlaylistNames) refresh(ctx context.Context, userID, playlistID string) 
 	if err != nil {
 		logger.Info("Couldn't look up the playlist name; keeping the saved one", append(fields, zap.Error(err))...)
 		return
+	}
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.lookups[playlistID] != lookup {
+		return // A newer lookup started meanwhile
 	}
 	if err := p.store.SetPlaylistName(playlistID, name); err != nil {
 		logger.Warn("Failed to save the playlist name", append(fields, zap.Error(err))...)
