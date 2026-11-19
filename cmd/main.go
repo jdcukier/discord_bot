@@ -23,6 +23,9 @@ import (
 	"discordbot/utils/httputil"
 )
 
+// defaultTagsFile is where playlist tags are saved when SPOTIFY_TAGS_FILE isn't set
+const defaultTagsFile = "playlist-tags.json"
+
 type Client interface {
 	fmt.Stringer
 	Start() error
@@ -152,6 +155,53 @@ func withVersion(msg string) string {
 	return fmt.Sprintf("%s\nVersion: %s", msg, version)
 }
 
+// staticTriggers is a trigger source that never changes
+type staticTriggers struct{ config *trigger.Config }
+
+func (s staticTriggers) Config() *trigger.Config { return s.config }
+
+// loadPlaylistTags loads the tags that route tracks to playlists other than the default.
+// Tags are saved in a file so they can be changed from Discord; on first run the file is
+// created from SPOTIFY_PLAYLIST_TRIGGERS. An invalid setup shouldn't take the bot down,
+// so problems are logged and the bot falls back to fewer features:
+// no tags at all (nil triggers), or tags that can't be changed (nil store).
+func loadPlaylistTags() (discord.TriggerSource, discord.TagStore) {
+	base, err := trigger.Load()
+	if err != nil {
+		logger.Error("Invalid playlist triggers; adding to the default playlist only", zap.Error(err))
+		return nil, nil
+	}
+
+	path := os.Getenv(envvar.SpotifyTagsFile)
+	if path == "" {
+		path = defaultTagsFile
+	}
+	store, imported, err := trigger.OpenStore(path, base)
+	if err != nil {
+		logger.Error("Failed to open the playlist tags file; using "+envvar.SpotifyPlaylistTriggers+" and disabling /tag",
+			zap.String(zapkey.Path, path), zap.Error(err))
+		logTriggers(base)
+		return staticTriggers{base}, nil
+	}
+	if imported {
+		logger.Info("Created the playlist tags file from "+envvar.SpotifyPlaylistTriggers, zap.String(zapkey.Path, path))
+	} else if os.Getenv(envvar.SpotifyPlaylistTriggers) != "" {
+		logger.Info("Using the playlist tags file; "+envvar.SpotifyPlaylistTriggers+" is only used to create it and can be removed",
+			zap.String(zapkey.Path, path))
+	}
+	logTriggers(store.Config())
+	return store, store
+}
+
+// logTriggers logs the names of the loaded triggers
+func logTriggers(c *trigger.Config) {
+	var names []string
+	for _, name := range slices.Sorted(maps.Keys(c.Playlists)) {
+		names = append(names, c.Prefix+name)
+	}
+	logger.Info("Loaded playlist triggers", zap.Strings(zapkey.Triggers, names))
+}
+
 // newSpotifyBot creates the Discord bot that collects songs into the Spotify playlist
 func newSpotifyBot(playlistAdder discord.PlaylistAdder) (*discord.Client, error) {
 	config, err := discordconfig.Load(envvar.NamespaceSpotify)
@@ -190,25 +240,12 @@ func newSpotifyBot(playlistAdder discord.PlaylistAdder) (*discord.Client, error)
 	}
 	songsChannelID := config.ChannelIDs[discordchannel.Songs]
 
-	// Triggers that route tracks to playlists other than the default.
-	// An invalid trigger config shouldn't take the bot down, so fall back to the default playlist only.
-	triggers, err := trigger.Load()
-	if err != nil {
-		logger.Error("Invalid playlist triggers; adding to the default playlist only", zap.Error(err))
-		triggers = nil
-	} else {
-		var triggerNames []string
-		for _, name := range slices.Sorted(maps.Keys(triggers.Playlists)) {
-			triggerNames = append(triggerNames, triggers.Prefix+name)
-		}
-		logger.Info("Loaded playlist triggers", zap.Strings(zapkey.Triggers, triggerNames))
-	}
-
 	// Handlers
+	triggers, tags := loadPlaylistTags()
 	handlers := []discord.Handler{
 		discord.NewReadyHandler(songsChannelID, withVersion(readyMessage), listeningMessage),
 		discord.NewMessageHandler(playlistAdder, actions, discord.WithPlaylistTriggers(triggers)),
-		discord.NewInteractionSessionHandler(),
+		discord.NewInteractionSessionHandler(discord.WithTagCommands(config.AppID, tags)),
 	}
 
 	// Create the client

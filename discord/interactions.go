@@ -16,12 +16,28 @@ import (
 
 // InteractionSessionHandler handles interactions
 type InteractionSessionHandler struct {
-	// TODO: Config
+	appID string   // Application to register slash commands for
+	tags  TagStore // Optional; enables the tag commands
+}
+
+// InteractionOption overrides a default interaction handler value
+type InteractionOption func(*InteractionSessionHandler)
+
+// WithTagCommands registers and handles the /tags and /tag commands for the application
+func WithTagCommands(appID string, tags TagStore) InteractionOption {
+	return func(h *InteractionSessionHandler) {
+		h.appID = appID
+		h.tags = tags
+	}
 }
 
 // NewInteractionSessionHandler creates a new interaction session handler
-func NewInteractionSessionHandler() *InteractionSessionHandler {
-	return &InteractionSessionHandler{}
+func NewInteractionSessionHandler(opts ...InteractionOption) *InteractionSessionHandler {
+	h := &InteractionSessionHandler{}
+	for _, opt := range opts {
+		opt(h)
+	}
+	return h
 }
 
 // String returns a string representation of the interaction session handler
@@ -35,6 +51,15 @@ func (h *InteractionSessionHandler) Add(session *discordgo.Session) error {
 		return fmt.Errorf("session is nil")
 	}
 	session.AddHandler(h.Handle)
+	if h.tags != nil {
+		if h.appID == "" {
+			return fmt.Errorf("app ID is required for the tag commands")
+		}
+		// Register on every READY so the command definitions stay in sync with the code
+		session.AddHandler(func(s *discordgo.Session, _ *discordgo.Ready) {
+			registerTagCommands(s, h.appID)
+		})
+	}
 	return nil
 }
 
@@ -63,6 +88,8 @@ func (h *InteractionSessionHandler) Handle(s *discordgo.Session, i *discordgo.In
 		h.ping(s, i)
 	case discordgo.InteractionApplicationCommand:
 		h.slashCommand(s, i)
+	case discordgo.InteractionApplicationCommandAutocomplete:
+		h.autocomplete(s, i)
 	default:
 		logger.Error("no responder for interaction type", fields...)
 	}
@@ -92,6 +119,16 @@ func (h *InteractionSessionHandler) slashCommand(s *discordgo.Session, i *discor
 		h.testCommand(s, i)
 	case challengeCommand:
 		h.challengeCommand(s, i)
+	case tagsCommand, tagCommand:
+		if h.tags == nil {
+			respond(s, i, tagReply{content: "Playlist tags aren't available right now.", private: true})
+			return
+		}
+		if data.Name == tagsCommand {
+			h.tagsCommand(s, i)
+		} else {
+			h.tagCommand(s, i)
+		}
 	default:
 		logger.Error("unknown slash command", zap.String(zapkey.Command, data.Name))
 	}
@@ -152,4 +189,102 @@ func (h *InteractionSessionHandler) challengeCommand(s *discordgo.Session, i *di
 	if err := s.InteractionRespond(i.Interaction, &response); err != nil {
 		logger.Error("failed to respond to challenge command", zap.Error(err))
 	}
+}
+
+// tagsCommand handles /tags, splitting long lists over several messages
+func (h *InteractionSessionHandler) tagsCommand(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	chunks := listTags(h.tags.Config())
+	respond(s, i, tagReply{content: chunks[0], private: true})
+	for _, chunk := range chunks[1:] {
+		if _, err := s.FollowupMessageCreate(i.Interaction, false, &discordgo.WebhookParams{
+			Content:         chunk,
+			Flags:           discordgo.MessageFlagsEphemeral,
+			AllowedMentions: &discordgo.MessageAllowedMentions{},
+		}); err != nil {
+			logger.Error("failed to send tag list", zap.Error(err))
+			return
+		}
+	}
+}
+
+// tagCommand handles /tag add and /tag remove
+func (h *InteractionSessionHandler) tagCommand(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	data := i.ApplicationCommandData()
+	if len(data.Options) == 0 {
+		return
+	}
+	sub := data.Options[0]
+	var name, playlist string
+	if opt := sub.GetOption(tagOption); opt != nil {
+		name = opt.StringValue()
+	}
+	if opt := sub.GetOption(playlistOption); opt != nil {
+		playlist = opt.StringValue()
+	}
+
+	var reply tagReply
+	switch sub.Name {
+	case tagAddSubcommand:
+		reply = addTag(h.tags, name, playlist)
+	case tagRemoveSubcommand:
+		reply = removeTag(h.tags, name, playlist)
+	default:
+		logger.Error("unknown tag subcommand", zap.String(zapkey.Command, sub.Name))
+		return
+	}
+	logger.Info("Handled tag command",
+		zap.String(zapkey.Command, sub.Name),
+		zap.String(zapkey.Name, name),
+		zap.String(zapkey.UserID, interactionUserID(i)),
+		zap.Bool(zapkey.Result, !reply.private)) // Replies contain playlist IDs, so don't log them
+	respond(s, i, reply)
+}
+
+// autocomplete suggests options while a slash command is being typed
+func (h *InteractionSessionHandler) autocomplete(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	data := i.ApplicationCommandData()
+	if data.Name != tagCommand || h.tags == nil || len(data.Options) == 0 {
+		return
+	}
+	var choices []*discordgo.ApplicationCommandOptionChoice
+	for _, opt := range data.Options[0].Options {
+		if opt.Focused && opt.Name == tagOption {
+			choices = autocompleteTags(h.tags.Config(), opt.StringValue())
+		}
+	}
+	if err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+		Type: discordgo.InteractionApplicationCommandAutocompleteResult,
+		Data: &discordgo.InteractionResponseData{Choices: choices},
+	}); err != nil {
+		logger.Error("failed to respond to autocomplete", zap.Error(err))
+	}
+}
+
+// respond replies to a slash command without pinging anyone
+func respond(s *discordgo.Session, i *discordgo.InteractionCreate, reply tagReply) {
+	var flags discordgo.MessageFlags
+	if reply.private {
+		flags = discordgo.MessageFlagsEphemeral
+	}
+	if err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+		Type: discordgo.InteractionResponseChannelMessageWithSource,
+		Data: &discordgo.InteractionResponseData{
+			Content:         reply.content,
+			Flags:           flags,
+			AllowedMentions: &discordgo.MessageAllowedMentions{},
+		},
+	}); err != nil {
+		logger.Error("failed to respond to slash command", zap.Error(err))
+	}
+}
+
+// interactionUserID returns the ID of the user who triggered the interaction
+func interactionUserID(i *discordgo.InteractionCreate) string {
+	if i.Member != nil && i.Member.User != nil {
+		return i.Member.User.ID
+	}
+	if i.User != nil {
+		return i.User.ID
+	}
+	return ""
 }

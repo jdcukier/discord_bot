@@ -56,15 +56,20 @@ func (c *Client) SendMessage(ctx context.Context, channelType string, message st
 // MessageHandler handles message events
 type MessageHandler struct {
 	playlistAdder PlaylistAdder
-	actionIDs     ChannelActions  // Map of channel IDs to actions to take for that channel
-	triggers      *trigger.Config // Optional playlist triggers; nil adds to the default playlist only
+	actionIDs     ChannelActions // Map of channel IDs to actions to take for that channel
+	triggers      TriggerSource  // Optional playlist triggers; nil adds to the default playlist only
+}
+
+// TriggerSource provides the current playlist triggers, which may change while the bot runs
+type TriggerSource interface {
+	Config() *trigger.Config
 }
 
 // MessageHandlerOption overrides a default message handler value
 type MessageHandlerOption func(*MessageHandler)
 
 // WithPlaylistTriggers routes tracks to playlists based on triggers in the message
-func WithPlaylistTriggers(triggers *trigger.Config) MessageHandlerOption {
+func WithPlaylistTriggers(triggers TriggerSource) MessageHandlerOption {
 	return func(h *MessageHandler) {
 		h.triggers = triggers
 	}
@@ -141,6 +146,12 @@ func (h *MessageHandler) Handle(s *discordgo.Session, m *discordgo.MessageCreate
 		return
 	}
 
+	// Use the same triggers for the whole message, even if they change meanwhile
+	var triggers *trigger.Config
+	if h.triggers != nil {
+		triggers = h.triggers.Config()
+	}
+
 	// List of actions to perform
 	var actions []Action
 
@@ -151,7 +162,7 @@ func (h *MessageHandler) Handle(s *discordgo.Session, m *discordgo.MessageCreate
 			reply := &Reply{session: s, event: m}
 			actions = append(actions, reply)
 		case ActionAddTracksToPlaylist:
-			addTracksToPlaylist := &AddTracksToPlaylist{session: s, event: m, playlistAdder: h.playlistAdder, triggers: h.triggers}
+			addTracksToPlaylist := &AddTracksToPlaylist{session: s, event: m, playlistAdder: h.playlistAdder, triggers: triggers}
 			actions = append(actions, addTracksToPlaylist)
 		default:
 			logger.With(zap.String(zapkey.Action, actionID)).Error("received unknown action", fields...)
