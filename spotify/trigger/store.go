@@ -71,8 +71,14 @@ func (d *storeDefault) UnmarshalYAML(value *yaml.Node) error {
 		d.err = fmt.Errorf("line %d: must have a name and an id", value.Line)
 		return nil
 	}
+	seen := map[string]bool{}
 	for i := 0; i+1 < len(value.Content); i += 2 {
 		key, field := value.Content[i], value.Content[i+1]
+		if seen[key.Value] {
+			*d = storeDefault{err: fmt.Errorf("line %d: duplicate field %q", key.Line, key.Value)}
+			return nil
+		}
+		seen[key.Value] = true
 		var target *string
 		switch key.Value {
 		case "name":
@@ -87,6 +93,9 @@ func (d *storeDefault) UnmarshalYAML(value *yaml.Node) error {
 			*d = storeDefault{err: fmt.Errorf("line %d: %s must be text", field.Line, key.Value)}
 			return nil
 		}
+	}
+	if !seen["name"] || !seen["id"] {
+		*d = storeDefault{err: fmt.Errorf("line %d: must have a name and an id", value.Line)}
 	}
 	return nil
 }

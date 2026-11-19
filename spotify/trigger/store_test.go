@@ -517,7 +517,10 @@ func TestOpenStoreIgnoresInvalidDefaultPlaylist(t *testing.T) {
 	// The error doesn't show IDs in full, since it's logged.
 	// Errors give the line in the file, and don't mention Go types.
 	for name, tc := range map[string]struct{ block, err string }{
-		"no ID":         {"default_playlist: {name: X}\n", `default_playlist line 2: "" isn't a valid Spotify playlist ID or link`},
+		"no ID":         {"default_playlist: {name: X}\n", "default_playlist line 2: must have a name and an id"},
+		"no name":       {"default_playlist:\n  id: " + defaultID + "\n", "default_playlist line 3: must have a name and an id"},
+		"empty":         {"default_playlist: {}\n", "default_playlist line 2: must have a name and an id"},
+		"duplicate":     {"default_playlist:\n  name: X\n  id: " + defaultID + "\n  id: " + defaultID + "\n", `default_playlist line 5: duplicate field "id"`},
 		"invalid ID":    {"default_playlist:\n  name: X\n  id: " + gymID + "x\n", `default_playlist line 4: "` + gymID[:4] + `…" isn't a valid Spotify playlist ID or link`},
 		"unknown field": {"default_playlist:\n  name: X\n  id: " + defaultID + "\n  extra: Y\n", `default_playlist line 5: unknown field "extra"`},
 		"ID as field":   {"default_playlist:\n  " + gymID + ": X\n", `default_playlist line 3: unknown field "` + gymID[:4] + `…"`},
