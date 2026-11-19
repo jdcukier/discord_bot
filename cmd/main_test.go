@@ -29,7 +29,7 @@ func TestLoadPlaylistTagsImportsSecret(t *testing.T) {
 	triggers, tags := loadPlaylistTags()
 	require.NotNil(t, triggers)
 	require.NotNil(t, tags)
-	assert.Equal(t, map[string][]string{"gym": {testPlaylistID}}, triggers.Config().Playlists)
+	assert.Equal(t, map[string]string{"gym": testPlaylistID}, triggers.Config().Tags)
 	assert.FileExists(t, path)
 }
 
@@ -42,7 +42,7 @@ func TestLoadPlaylistTagsIgnoresInvalidSecretOnceFileExists(t *testing.T) {
 	triggers, tags := loadPlaylistTags()
 	require.NotNil(t, triggers)
 	require.NotNil(t, tags, "/tag stays enabled")
-	assert.Equal(t, map[string][]string{"gym": {testPlaylistID}}, triggers.Config().Playlists)
+	assert.Equal(t, map[string]string{"gym": testPlaylistID}, triggers.Config().Tags)
 	assert.FileExists(t, path)
 }
 

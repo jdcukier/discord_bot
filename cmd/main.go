@@ -18,6 +18,7 @@ import (
 	"discordbot/discord"
 	discordchannel "discordbot/discord/channel"
 	discordconfig "discordbot/discord/config"
+	"discordbot/log"
 	"discordbot/spotify"
 	"discordbot/spotify/trigger"
 	"discordbot/utils/httputil"
@@ -193,22 +194,33 @@ func loadPlaylistTags() (discord.TriggerSource, discord.TagStore) {
 		seed = nil
 	}
 
-	store, created, err := trigger.OpenStore(path, settings, seed)
+	store, result, err := trigger.OpenStore(path, settings, seed)
 	if err != nil {
 		logger.Error("Failed to open the playlist tags file; using "+envvar.SpotifyPlaylistTriggers+" and disabling /tag",
 			zap.String(zapkey.Path, path), zap.Error(err))
-		fallback, err := trigger.New(settings.Prefix, settings.DefaultPlaylistID, seed, settings.ReplyUnknown)
+		tags, dropped := trigger.ToTags(seed, settings.DefaultPlaylistID)
+		fallback, err := trigger.New(settings.Prefix, settings.DefaultPlaylistID, tags, settings.ReplyUnknown)
 		if err != nil {
 			logger.Error("Invalid playlist triggers; adding to the default playlist only", zap.Error(err))
 			return nil, nil
 		}
+		logDroppedPlaylists(fallback, dropped)
 		logTriggers(fallback)
 		return staticTriggers{fallback}, nil
 	}
+	logDroppedPlaylists(store.Config(), result.Dropped)
+	if result.Backup != "" {
+		logger.Info("Converted the playlist tags file to one playlist per tag and backed up the original",
+			zap.String(zapkey.Path, result.Backup))
+	}
+	if result.SaveErr != nil {
+		logger.Warn("Failed to save the converted playlist tags file; using the converted tags anyway and retrying on the next change",
+			zap.String(zapkey.Path, path), zap.Error(result.SaveErr))
+	}
 	switch {
-	case created && len(seed) > 0:
+	case result.Created && len(seed) > 0:
 		logger.Info("Created the playlist tags file from "+envvar.SpotifyPlaylistTriggers, zap.String(zapkey.Path, path))
-	case created:
+	case result.Created:
 		logger.Info("Created an empty playlist tags file", zap.String(zapkey.Path, path))
 	case os.Getenv(envvar.SpotifyPlaylistTriggers) != "":
 		logger.Info("Using the playlist tags file; "+envvar.SpotifyPlaylistTriggers+" is only used to create it and can be removed",
@@ -218,10 +230,30 @@ func loadPlaylistTags() (discord.TriggerSource, discord.TagStore) {
 	return store, store
 }
 
+// logDroppedPlaylists warns about tags that lost playlists when tags became one playlist each.
+// IDs are shortened like everywhere else in the logs.
+func logDroppedPlaylists(c *trigger.Config, dropped map[string][]string) {
+	for _, name := range slices.Sorted(maps.Keys(dropped)) {
+		var ids []string
+		for _, id := range dropped[name] {
+			if id == c.DefaultPlaylistID {
+				ids = append(ids, "default playlist")
+			} else {
+				ids = append(ids, log.RedactID(id))
+			}
+		}
+		logger.Warn("Tag now points to one playlist; use "+trigger.PlusPrefix+name+" to also add to the default playlist, "+
+			"or /tag add a new tag for each dropped playlist",
+			zap.String(zapkey.Name, c.Prefix+name),
+			zap.String(zapkey.PlaylistID, log.RedactID(c.Tags[name])),
+			zap.Strings(zapkey.PlaylistIDs+"_dropped", ids))
+	}
+}
+
 // logTriggers logs the names of the loaded triggers
 func logTriggers(c *trigger.Config) {
 	var names []string
-	for _, name := range slices.Sorted(maps.Keys(c.Playlists)) {
+	for _, name := range slices.Sorted(maps.Keys(c.Tags)) {
 		names = append(names, c.Prefix+name)
 	}
 	logger.Info("Loaded playlist triggers", zap.Strings(zapkey.Triggers, names))

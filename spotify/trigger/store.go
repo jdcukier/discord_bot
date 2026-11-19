@@ -8,10 +8,10 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 // editorialPrefix starts the IDs of Spotify-owned editorial playlists, which nobody else can add to
@@ -24,8 +24,13 @@ var playlistIDRegex = regexp.MustCompile(`^[0-9A-Za-z]{22}$`)
 // https://open.spotify.com/playlist/<id>?si=..., open.spotify.com/intl-fr/playlist/<id>, or spotify:playlist:<id>
 var playlistLinkRegex = regexp.MustCompile(`(?:/playlist/|^spotify:playlist:)([0-9A-Za-z]+)`)
 
-// storeFile is the on-disk format of the store
+// storeFile is the on-disk format of the store: tag name to playlist ID
 type storeFile struct {
+	Tags map[string]string `json:"tags"`
+}
+
+// legacyStoreFile is the earlier format, with a list of playlists per tag
+type legacyStoreFile struct {
 	Tags map[string][]string `json:"tags"`
 }
 
@@ -35,14 +40,31 @@ type Store struct {
 	path   string
 	mu     sync.Mutex // Serializes writes
 	config atomic.Pointer[Config]
+
+	legacy []byte // Earlier-format file contents, backed up before the file is first overwritten
+	backup string // Where legacy was backed up
 }
+
+// OpenResult describes what OpenStore did besides loading the tags
+type OpenResult struct {
+	Created bool                // The file didn't exist and was created from the seed
+	Dropped map[string][]string // Tags converted from several playlists to one, and the playlists they lost
+	Backup  string              // Where the earlier-format file was backed up, once the conversion was saved
+	SaveErr error               // Converting the file worked but saving it didn't; it's retried on the next change
+}
+
+// BackupSuffix is added to the path of an earlier-format tags file to back it up before conversion.
+// If that backup already exists (e.g. after a rollback and a second upgrade), a timestamp is added too.
+const BackupSuffix = ".v1.bak"
 
 // OpenStore loads the tags saved at path, using settings for everything else
 // (settings' own tags are ignored). If no file exists yet, it's created from seed,
-// the tags in SPOTIFY_PLAYLIST_TRIGGERS. created reports whether that happened.
-func OpenStore(path string, settings *Config, seed map[string][]string) (store *Store, created bool, err error) {
+// the tags in SPOTIFY_PLAYLIST_TRIGGERS. Files in the earlier format, with several
+// playlists per tag, are converted with ToTags and saved in the current format.
+func OpenStore(path string, settings *Config, seed map[string][]string) (*Store, OpenResult, error) {
+	var result OpenResult
 	if settings == nil {
-		return nil, false, fmt.Errorf("settings are nil")
+		return nil, result, fmt.Errorf("settings are nil")
 	}
 	s := &Store{path: path}
 
@@ -51,39 +73,83 @@ func OpenStore(path string, settings *Config, seed map[string][]string) (store *
 	case errors.Is(err, os.ErrNotExist):
 		seed, err := NormalizePlaylists(seed)
 		if err != nil {
-			return nil, false, fmt.Errorf("invalid tags to import: %w", err)
+			return nil, result, fmt.Errorf("invalid tags to import: %w", err)
 		}
-		config, err := settings.withPlaylists(seed)
-		if err != nil {
-			return nil, false, err
+		var tags map[string]string
+		tags, result.Dropped = ToTags(seed, settings.DefaultPlaylistID)
+		if err := s.init(settings, tags); err != nil {
+			return nil, OpenResult{}, err
 		}
-		if err := s.save(seed); err != nil {
-			return nil, false, err
+		if err := s.save(tags); err != nil {
+			return nil, OpenResult{}, err
 		}
-		s.config.Store(config)
-		return s, true, nil
+		result.Created = true
+		return s, result, nil
 	case err != nil:
-		return nil, false, fmt.Errorf("failed to read %s: %w", path, err)
+		return nil, result, fmt.Errorf("failed to read %s: %w", path, err)
 	}
 
 	var file storeFile
 	if err := json.Unmarshal(data, &file); err != nil {
-		return nil, false, fmt.Errorf("failed to parse %s: %w", path, err)
+		// Try the earlier format
+		var legacy legacyStoreFile
+		if legacyErr := json.Unmarshal(data, &legacy); legacyErr != nil {
+			return nil, result, fmt.Errorf("failed to parse %s: %w", path, err)
+		}
+		playlists, err := NormalizePlaylists(legacy.Tags)
+		if err != nil {
+			return nil, result, fmt.Errorf("invalid tags in %s: %w", path, err)
+		}
+		var tags map[string]string
+		tags, result.Dropped = ToTags(playlists, settings.DefaultPlaylistID)
+		if err := s.init(settings, tags); err != nil {
+			return nil, OpenResult{}, fmt.Errorf("failed to convert %s: %w", path, err)
+		}
+		// The converted tags work even if they can't be saved yet; save backs up the old file first
+		s.legacy = data
+		result.SaveErr = s.save(tags)
+		result.Backup = s.backup
+		return s, result, nil
 	}
-	playlists, err := NormalizePlaylists(file.Tags)
+	tags, err := normalizeTags(file.Tags)
 	if err != nil {
-		return nil, false, fmt.Errorf("invalid tags in %s: %w", path, err)
+		return nil, result, fmt.Errorf("invalid tags in %s: %w", path, err)
 	}
-	config, err := settings.withPlaylists(playlists)
-	if err != nil {
-		return nil, false, fmt.Errorf("invalid tags in %s: %w", path, err)
+	if err := s.init(settings, tags); err != nil {
+		return nil, result, fmt.Errorf("invalid tags in %s: %w", path, err)
 	}
-	s.config.Store(config)
-	return s, false, nil
+	return s, result, nil
 }
 
-// NormalizePlaylists validates tag names and converts playlist links to bare IDs,
-// so stored IDs always match what /tag remove extracts. Tags without playlists are dropped.
+// init sets the store's initial tags
+func (s *Store) init(settings *Config, tags map[string]string) error {
+	config, err := settings.withTags(tags)
+	if err != nil {
+		return err
+	}
+	s.config.Store(config)
+	return nil
+}
+
+// normalizeTags validates tag names and converts playlist links to bare IDs,
+// so stored IDs always match what the commands extract
+func normalizeTags(tags map[string]string) (map[string]string, error) {
+	out := make(map[string]string, len(tags))
+	for name, raw := range tags {
+		if err := ValidateName(name); err != nil {
+			return nil, err
+		}
+		id, err := ExtractPlaylistID(raw)
+		if err != nil {
+			return nil, fmt.Errorf("tag %q: %w", name, err)
+		}
+		out[name] = id
+	}
+	return out, nil
+}
+
+// NormalizePlaylists is normalizeTags for several playlists per tag, as in SPOTIFY_PLAYLIST_TRIGGERS.
+// Tags without playlists are dropped.
 func NormalizePlaylists(playlists map[string][]string) (map[string][]string, error) {
 	out := make(map[string][]string, len(playlists))
 	for name, ids := range playlists {
@@ -106,73 +172,66 @@ func (s *Store) Config() *Config {
 	return s.config.Load()
 }
 
-// Add adds a playlist to a tag, creating the tag if needed, and returns the tag's playlists.
-// added is false if the tag already pointed to the playlist.
-func (s *Store) Add(name, playlistID string) (playlistIDs []string, added bool, err error) {
-	if err := ValidateName(name); err != nil {
-		return nil, false, err
-	}
-	if !playlistIDRegex.MatchString(playlistID) {
-		return nil, false, fmt.Errorf("invalid playlist ID %q", playlistID)
-	}
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	current := s.Config()
-	if slices.Contains(current.Playlists[name], playlistID) {
-		return current.Playlists[name], false, nil
-	}
-	playlists := clonePlaylists(current.Playlists)
-	playlists[name] = append(playlists[name], playlistID)
-	if err := s.update(current, playlists); err != nil {
-		return nil, false, err
-	}
-	return playlists[name], true, nil
+// Add creates a tag pointing to a playlist. If the tag already exists, it's left
+// unchanged and its playlist is returned as existing.
+func (s *Store) Add(name, playlistID string) (existing string, err error) {
+	return s.set(name, playlistID, false)
 }
 
-// Remove removes a playlist from a tag, or the whole tag if playlistID is empty.
-// It returns the playlists the tag still points to, which is empty if the tag was deleted.
-func (s *Store) Remove(name, playlistID string) (remaining []string, err error) {
+// Set points a tag to a playlist, creating the tag if needed.
+// It returns the playlist the tag pointed to before, if any.
+func (s *Store) Set(name, playlistID string) (previous string, err error) {
+	return s.set(name, playlistID, true)
+}
+
+// set creates a tag, or replaces its playlist if replace is true, and returns its previous playlist
+func (s *Store) set(name, playlistID string, replace bool) (previous string, err error) {
 	if err := ValidateName(name); err != nil {
-		return nil, err
+		return "", err
+	}
+	if !playlistIDRegex.MatchString(playlistID) {
+		return "", fmt.Errorf("invalid playlist ID %q", playlistID)
 	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	current := s.Config()
-	ids, ok := current.Playlists[name]
+	previous = current.Tags[name]
+	if previous == playlistID || (previous != "" && !replace) {
+		return previous, nil
+	}
+	tags := maps.Clone(current.Tags)
+	tags[name] = playlistID
+	return previous, s.update(current, tags)
+}
+
+// Remove deletes a tag and returns the playlist it pointed to
+func (s *Store) Remove(name string) (previous string, err error) {
+	if err := ValidateName(name); err != nil {
+		return "", err
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	current := s.Config()
+	previous, ok := current.Tags[name]
 	if !ok {
-		return nil, fmt.Errorf("there's no %s%s tag", current.Prefix, name)
+		return "", fmt.Errorf("there's no %s%s tag", current.Prefix, name)
 	}
-	playlists := clonePlaylists(current.Playlists)
-	if playlistID == "" {
-		delete(playlists, name)
-	} else {
-		if !slices.Contains(ids, playlistID) {
-			return nil, fmt.Errorf("%s%s doesn't add to that playlist", current.Prefix, name)
-		}
-		remaining = slices.DeleteFunc(slices.Clone(ids), func(id string) bool { return id == playlistID })
-		if len(remaining) == 0 {
-			delete(playlists, name)
-		} else {
-			playlists[name] = remaining
-		}
-	}
-	if err := s.update(current, playlists); err != nil {
-		return nil, err
-	}
-	return remaining, nil
+	tags := maps.Clone(current.Tags)
+	delete(tags, name)
+	return previous, s.update(current, tags)
 }
 
 // update saves the new tags and makes them current. The caller must hold s.mu.
-func (s *Store) update(current *Config, playlists map[string][]string) error {
-	config, err := current.withPlaylists(playlists)
+func (s *Store) update(current *Config, tags map[string]string) error {
+	config, err := current.withTags(tags)
 	if err != nil {
 		return err
 	}
-	if err := s.save(playlists); err != nil {
+	if err := s.save(tags); err != nil {
 		return err
 	}
 	s.config.Store(config)
@@ -180,11 +239,16 @@ func (s *Store) update(current *Config, playlists map[string][]string) error {
 }
 
 // save writes the tags to disk atomically, so a crash never leaves a half-written file
-func (s *Store) save(playlists map[string][]string) error {
-	if playlists == nil {
-		playlists = map[string][]string{}
+func (s *Store) save(tags map[string]string) error {
+	if s.legacy != nil {
+		if err := s.backupLegacy(); err != nil {
+			return err
+		}
 	}
-	data, err := json.MarshalIndent(storeFile{Tags: playlists}, "", "  ")
+	if tags == nil {
+		tags = map[string]string{}
+	}
+	data, err := json.MarshalIndent(storeFile{Tags: tags}, "", "  ")
 	if err != nil {
 		return fmt.Errorf("failed to encode tags: %w", err)
 	}
@@ -219,6 +283,38 @@ func (s *Store) save(playlists map[string][]string) error {
 	return nil
 }
 
+// backupLegacy copies the earlier-format file next to it, so playlists dropped by the
+// conversion aren't lost and an older version of the bot can still be restored.
+// Existing backups are never overwritten.
+func (s *Store) backupLegacy() error {
+	path := s.path + BackupSuffix
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if errors.Is(err, os.ErrExist) {
+		path = fmt.Sprintf("%s.v1.%s.bak", s.path, time.Now().UTC().Format("20060102T150405.000000000Z"))
+		f, err = os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	}
+	if err != nil {
+		return fmt.Errorf("failed to back up the old tags file: %w", err)
+	}
+	if _, err := f.Write(s.legacy); err != nil {
+		f.Close()
+		os.Remove(path)
+		return fmt.Errorf("failed to back up the old tags file: %w", err)
+	}
+	if err := f.Sync(); err != nil {
+		f.Close()
+		os.Remove(path)
+		return fmt.Errorf("failed to back up the old tags file: %w", err)
+	}
+	if err := f.Close(); err != nil {
+		os.Remove(path)
+		return fmt.Errorf("failed to back up the old tags file: %w", err)
+	}
+	s.legacy = nil
+	s.backup = path
+	return nil
+}
+
 // syncDir flushes a directory's entries to disk
 func syncDir(dir string) error {
 	d, err := os.Open(dir)
@@ -229,9 +325,9 @@ func syncDir(dir string) error {
 	return d.Sync()
 }
 
-// withPlaylists returns a copy of c with different tags
-func (c *Config) withPlaylists(playlists map[string][]string) (*Config, error) {
-	return New(c.Prefix, c.DefaultPlaylistID, playlists, c.ReplyUnknown)
+// withTags returns a copy of c with different tags
+func (c *Config) withTags(tags map[string]string) (*Config, error) {
+	return New(c.Prefix, c.DefaultPlaylistID, tags, c.ReplyUnknown)
 }
 
 // ValidateName checks that a tag name (without the prefix) is lowercase, valid, and not reserved
@@ -271,13 +367,4 @@ func ExtractPlaylistID(input string) (string, error) {
 		return "", fmt.Errorf("%q isn't a valid Spotify playlist ID", id)
 	}
 	return id, nil
-}
-
-// clonePlaylists deep-copies a tag mapping
-func clonePlaylists(playlists map[string][]string) map[string][]string {
-	out := make(map[string][]string, len(playlists))
-	for name, ids := range maps.All(playlists) {
-		out[name] = slices.Clone(ids)
-	}
-	return out
 }
