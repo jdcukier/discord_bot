@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -111,45 +112,241 @@ func TestRemoveTag(t *testing.T) {
 	assert.Equal(t, map[string]string{"chill": chillTestID}, store.Config().Tags)
 }
 
-func TestListTags(t *testing.T) {
-	empty := newTestTagStore(t, nil)
-	chunks := listTags(empty.Config())
-	require.Len(t, chunks, 1)
-	assert.Contains(t, chunks[0], "`+name` also adds it to the default playlist")
-	assert.Contains(t, chunks[0], "**Default playlist** <https://open.spotify.com/playlist/"+defaultTestID+">: `!default`")
-	assert.Contains(t, chunks[0], "No other tags yet")
+// testNames returns playlist names from a map, and "" for unknown playlists
+func testNames(names map[string]string) func(id string) string {
+	return func(id string) string { return names[id] }
+}
 
-	// Grouped by playlist, so aliases are listed together
+func TestListTagsEmpty(t *testing.T) {
+	store := newTestTagStore(t, nil)
+	chunks := listTags(store.Config(), nil)
+	require.Len(t, chunks, 1)
+	assert.Equal(t, strings.Join([]string{
+		"## 🎵 Playlist tags",
+		"> **How to tag**",
+		"> `<song link> !gym` — add to that playlist only",
+		"> `<song link> +gym` — add to that playlist **and** the default",
+		"> `<song link> !gym !chill` — add to several",
+		"> No tag → default playlist",
+		"",
+		"**Playlists**",
+		"🎧 **[Default playlist](<https://open.spotify.com/playlist/" + defaultTestID + ">)** — `default`",
+		"No other tags yet.",
+		"",
+		"> **Manage**",
+		"> `/tag add` — create a tag",
+		"> `/tag set` — create a tag or change its playlist",
+		"> `/tag remove` — delete a tag",
+	}, "\n"), chunks[0])
+}
+
+func TestListTags(t *testing.T) {
+	const (
+		lateTestID  = "LATE000000000000000000"
+		otherTestID = "OTHER00000000000000000"
+	)
 	store := newTestTagStore(t, map[string][]string{
-		"relaxing": {chillTestID},
-		"chill":    {chillTestID},
+		"workout":  {gymTestID},
 		"gym":      {gymTestID},
+		"lifting":  {gymTestID},
+		"sleep":    {lateTestID},
+		"chill":    {chillTestID},
+		"relaxing": {chillTestID},
 		"main":     {defaultTestID},
+		"misc":     {otherTestID},
 	})
-	chunks = listTags(store.Config())
+	names := testNames(map[string]string{
+		gymTestID:   "Gym Bangers",
+		lateTestID:  "late Night",
+		chillTestID: "Chill *vibes* [2024]",
+	})
+	chunks := listTags(store.Config(), names)
 	require.Len(t, chunks, 1)
 	lines := strings.Split(chunks[0], "\n")
-	assert.Equal(t, []string{
-		"**Default playlist** <https://open.spotify.com/playlist/" + defaultTestID + ">: `!default`, `!main`",
-		"<https://open.spotify.com/playlist/" + chillTestID + ">: `!chill`, `!relaxing`",
-		"<https://open.spotify.com/playlist/" + gymTestID + ">: `!gym`",
-	}, lines[1:])
 
-	// Long lists are split without breaking lines
+	// Real tags on two different playlists are used as examples, and the default playlist's tags aren't
+	assert.Equal(t, "> `<song link> !chill` — add to that playlist only", lines[2])
+	assert.Equal(t, "> `<song link> +chill` — add to that playlist **and** the default", lines[3])
+	assert.Equal(t, "> `<song link> !chill !gym` — add to several", lines[4])
+
+	// Playlists by name (case-insensitive) after the default one, with unknown names last
+	assert.Equal(t, []string{
+		"**Playlists**",
+		"🎧 **[Default playlist](<https://open.spotify.com/playlist/" + defaultTestID + ">)** — `default`, `main`",
+		"🎧 **[Chill \\*vibes\\* \\[2024\\]](<https://open.spotify.com/playlist/" + chillTestID + ">)** — `chill`, `relaxing`",
+		"🎧 **[Gym Bangers](<https://open.spotify.com/playlist/" + gymTestID + ">)** — `gym`, `lifting`, `workout`",
+		"🎧 **[late Night](<https://open.spotify.com/playlist/" + lateTestID + ">)** — `sleep`",
+		"🎧 **[Untitled playlist](<https://open.spotify.com/playlist/" + otherTestID + ">)** — `misc`",
+		"",
+		"> **Manage**",
+	}, lines[7:15])
+
+	// The default playlist's name is shown when it's known
+	chunks = listTags(store.Config(), testNames(map[string]string{defaultTestID: "Everything"}))
+	assert.Contains(t, chunks[0], "🎧 **[Everything](<https://open.spotify.com/playlist/"+defaultTestID+">)** — `default`, `main`")
+}
+
+func TestListTagsSortsUnknownNamesByID(t *testing.T) {
+	// The tag on chillTestID sorts first, but gymTestID ("0…") sorts before chillTestID ("A…")
+	store := newTestTagStore(t, map[string][]string{"b": {gymTestID}, "a": {chillTestID}, "c": {defaultTestID}})
+	chunks := listTags(store.Config(), testNames(nil))
+	require.Len(t, chunks, 1)
+	assert.Less(t, strings.Index(chunks[0], gymTestID), strings.Index(chunks[0], chillTestID))
+	// Ties are broken by ID too
+	chunks = listTags(store.Config(), func(string) string { return "Same" })
+	assert.Less(t, strings.Index(chunks[0], gymTestID), strings.Index(chunks[0], chillTestID))
+}
+
+func TestExampleTagNames(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		tags          map[string][]string
+		first, second string
+	}{
+		{"no tags", nil, "gym", "chill"},
+		{"one tag", map[string][]string{"run": {gymTestID}}, "run", "gym"},
+		{"one tag named like a fallback", map[string][]string{"gym": {gymTestID}}, "gym", "chill"},
+		{"aliases only", map[string][]string{"chill": {chillTestID}, "relax": {chillTestID}}, "chill", "gym"},
+		{"default playlist only", map[string][]string{"main": {defaultTestID}}, "gym", "chill"},
+		{"two playlists", map[string][]string{"b": {gymTestID}, "a": {gymTestID}, "c": {chillTestID}}, "a", "c"},
+		{"second tag on the default playlist", map[string][]string{"run": {gymTestID}, "main": {defaultTestID}}, "run", "main"},
+		{"other playlist preferred over the default", map[string][]string{"run": {gymTestID}, "main": {defaultTestID}, "zen": {chillTestID}}, "run", "zen"},
+		{"fallbacks are aliases", map[string][]string{"gym": {gymTestID}, "chill": {gymTestID}}, "chill", "party"},
+		{"fallbacks on the default playlist", map[string][]string{"gym": {defaultTestID}, "chill": {defaultTestID}}, "party", "chill"},
+		{"all fallbacks are aliases", map[string][]string{"gym": {gymTestID}, "chill": {gymTestID}, "party": {gymTestID}}, "chill", "gym"},
+		{"all fallbacks on the default playlist", map[string][]string{"gym": {defaultTestID}, "chill": {defaultTestID}, "party": {defaultTestID}}, "chill", "gym"},
+	} {
+		first, second := exampleTagNames(newTestTagStore(t, tc.tags).Config())
+		assert.Equal(t, tc.first, first, tc.name)
+		assert.Equal(t, tc.second, second, tc.name)
+	}
+}
+
+func TestEscapeMarkdown(t *testing.T) {
+	assert.Equal(t, "Plain name", escapeMarkdown("Plain name"))
+	assert.Equal(t, `\[a\]\*b\*\_c\_\`+"`d\\`"+`\~e\~\|f\|\>g\\h`, escapeMarkdown("[a]*b*_c_`d`~e~|f|>g\\h"))
+}
+
+func TestCleanPlaylistName(t *testing.T) {
+	assert.Equal(t, "Plain name", cleanPlaylistName("  Plain name "))
+	// Line breaks, separators and other control characters become spaces
+	lineSep, paraSep := string(rune(0x2028)), string(rune(0x2029))
+	assert.Equal(t, "a b c d e f", cleanPlaylistName("a\nb\r\nc"+lineSep+"d"+paraSep+"e\tf\x00"))
+	// Invisible characters (zero-width space, bidi marks, override and isolate, BOM) are dropped
+	zeroWidth := string(rune(0x200b))
+	assert.Equal(t, "abcdef", cleanPlaylistName("a"+zeroWidth+"b"+string(rune(0x202e))+"c"+string(rune(0x2066))+
+		"d"+string(rune(0xfeff))+"e"+string([]rune{0x200e, 0x200f})+"f"))
+	assert.Equal(t, "ab", cleanPlaylistName("a"+string(rune(0x061c))+"b"), "Arabic letter mark")
+	// Only invisible characters: treated as unknown
+	assert.Equal(t, "", cleanPlaylistName(zeroWidth+"\n"))
+
+	// Joiners and emoji tag characters are kept
+	for _, name := range []string{
+		string([]rune{0x1F469, 0x200D, 0x1F4BB}) + " coding",                                       // Woman technologist (ZWJ sequence)
+		string([]rune{0x1F3F4, 0xE0067, 0xE0062, 0xE0065, 0xE006E, 0xE0067, 0xE007F}) + " England", // Flag (tag sequence)
+		string([]rune{0x0645, 0x06CC, 0x200C, 0x062E, 0x0648, 0x0627, 0x0647, 0x0645}),             // Persian word with a ZWNJ
+	} {
+		assert.Equal(t, name, cleanPlaylistName(name))
+	}
+
+	// Long names are cut on a character boundary
+	long := strings.Repeat("é", maxPlaylistNameLength+5)
+	got := cleanPlaylistName(long)
+	assert.Equal(t, maxPlaylistNameLength, utf8.RuneCountInString(got))
+	assert.Equal(t, strings.Repeat("é", maxPlaylistNameLength-1)+"…", got)
+	exact := strings.Repeat("x", maxPlaylistNameLength)
+	assert.Equal(t, exact, cleanPlaylistName(exact))
+
+	// A ZWJ sequence or an accent straddling the limit is dropped whole
+	pad := strings.Repeat("x", maxPlaylistNameLength-3)
+	emoji := string([]rune{0x1F469, 0x200D, 0x1F4BB})
+	assert.Equal(t, pad+"…", cleanPlaylistName(pad+emoji+"y"))
+	pad = strings.Repeat("x", maxPlaylistNameLength-2)
+	assert.Equal(t, pad+"…", cleanPlaylistName(pad+"e"+string(rune(0x0301))+"z"))
+	// An emoji with a skin tone modifier
+	assert.Equal(t, pad+"…", cleanPlaylistName(pad+string([]rune{0x1F44D, 0x1F3FD})+"z"))
+	// A spacing combining mark (Devanagari "ki")
+	assert.Equal(t, pad+"…", cleanPlaylistName(pad+string([]rune{0x0915, 0x093F})+"z"))
+
+	// Flags (pairs of regional indicators) aren't split
+	fr, de := string([]rune{0x1F1EB, 0x1F1F7}), string([]rune{0x1F1E9, 0x1F1EA})
+	assert.Equal(t, pad+"…", cleanPlaylistName(pad+fr+"abc"))
+	pad = strings.Repeat("x", maxPlaylistNameLength-3)
+	assert.Equal(t, pad+fr+"…", cleanPlaylistName(pad+fr+"abc"), "a whole flag fits")
+	pad = strings.Repeat("x", maxPlaylistNameLength-4)
+	assert.Equal(t, pad+fr+"…", cleanPlaylistName(pad+fr+de+"abc"), "the second flag straddles the limit")
+
+	// Without a clean place to cut, the name is cut at the limit rather than dropped
+	accent := string(rune(0x0301))
+	got = cleanPlaylistName("a" + strings.Repeat(accent, 150))
+	assert.Equal(t, "a"+strings.Repeat(accent, maxPlaylistNameLength-2)+"…", got)
+}
+
+func TestListTagsLongAndUnsafeNames(t *testing.T) {
+	store := newTestTagStore(t, map[string][]string{"gym": {gymTestID}, "chill": {chillTestID}})
+	names := testNames(map[string]string{
+		gymTestID:   strings.Repeat(`\[`, 2000),
+		chillTestID: "Late\nNight" + string(rune(0x202e)), // Ends with a bidi override
+	})
+	chunks := listTags(store.Config(), names)
+	require.Len(t, chunks, 1)
+	assert.LessOrEqual(t, len(chunks[0]), maxMessageLength)
+	// The name is cut before escaping, so the link stays whole and no escape is split
+	assert.Contains(t, chunks[0], "🎧 **["+strings.Repeat(`\\\[`, (maxPlaylistNameLength-1)/2)+`\\…](<https://open.spotify.com/playlist/`+gymTestID+">)** — `gym`")
+	assert.Contains(t, chunks[0], "🎧 **[Late Night](<https://open.spotify.com/playlist/"+chillTestID+">)** — `chill`")
+}
+
+// namedTagStore is a tag store that knows playlist names
+type namedTagStore struct {
+	*trigger.Store
+	names map[string]string
+}
+
+func (s namedTagStore) PlaylistName(id string) string { return s.names[id] }
+
+func TestPlaylistNames(t *testing.T) {
+	store := newTestTagStore(t, map[string][]string{"gym": {gymTestID}})
+	// Stores that don't know names give no lookup
+	assert.Nil(t, playlistNames(store))
+
+	named := namedTagStore{Store: store, names: map[string]string{gymTestID: "Gym Bangers"}}
+	name := playlistNames(named)
+	require.NotNil(t, name)
+	assert.Equal(t, "Gym Bangers", name(gymTestID))
+	assert.Contains(t, listTags(named.Config(), name)[0], "🎧 **[Gym Bangers](<https://open.spotify.com/playlist/"+gymTestID+">)** — `gym`")
+}
+
+func TestListTagsSplitsLongLists(t *testing.T) {
 	many := map[string][]string{}
 	ids := []string{gymTestID, chillTestID}
 	for i, c := range "abcdefghijklmnopqrstuvwxyz0123456789" {
 		many["a-very-long-tag-name-for-testing-"+string(c)] = []string{ids[i%2]}
 	}
+	names := map[string]string{}
 	for i := range 40 {
 		id := fmt.Sprintf("%022d", i)
 		many[fmt.Sprintf("tag%d", i)] = []string{id}
+		names[id] = fmt.Sprintf("Playlist number %02d with a fairly long name", i)
 	}
-	chunks = listTags(newTestTagStore(t, many).Config())
-	assert.Greater(t, len(chunks), 1)
-	for _, chunk := range chunks {
+	chunks := listTags(newTestTagStore(t, many).Config(), testNames(names))
+	require.Greater(t, len(chunks), 1)
+	for i, chunk := range chunks {
 		assert.LessOrEqual(t, len(chunk), maxMessageLength)
+		assert.False(t, strings.HasPrefix(chunk, "\n"), "chunk %d starts with a blank line", i)
+		// "How to tag" is only in the first message, and "Manage" only in the last
+		assert.Equal(t, i == 0, strings.Contains(chunk, "**How to tag**"), i)
+		assert.Equal(t, i == len(chunks)-1, strings.Contains(chunk, "**Manage**"), i)
+		assert.Equal(t, i == 0, strings.Contains(chunk, "**Playlists**"), i)
 	}
+	// The quoted blocks aren't split
+	assert.Contains(t, chunks[0], "> **How to tag**\n> `<song link> !a-very-long-tag-name-for-testing-0`")
+	assert.Contains(t, chunks[0], "> No tag → default playlist")
+	assert.True(t, strings.HasSuffix(chunks[len(chunks)-1], "> **Manage**\n> `/tag add` — create a tag\n"+
+		"> `/tag set` — create a tag or change its playlist\n> `/tag remove` — delete a tag"))
+	// Every playlist is listed once, sorted by name
+	all := strings.Join(chunks, "\n")
+	assert.Equal(t, 43, strings.Count(all, "🎧 "))
+	assert.Less(t, strings.Index(all, "Playlist number 00"), strings.Index(all, "Playlist number 39"))
 }
 
 func TestAutocompleteTags(t *testing.T) {
