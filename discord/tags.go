@@ -260,24 +260,46 @@ func exampleTagNames(c *trigger.Config) (first, second string) {
 	anyTag := func(string) bool { return true }
 
 	first = cmp.Or(pick(notDefault, tags), pick(anyTag, unused, tags, exampleTags))
-	differentPlaylist := func(tag string) bool { return notDefault(tag) && c.Tags[tag] != c.Tags[first] }
-	if _, isTag := c.Tags[first]; !isTag {
-		differentPlaylist = func(string) bool { return false }
+	// Only a real first tag has a playlist that a second tag can differ from
+	differentPlaylist := func(string) bool { return false }
+	if firstID, isTag := c.Tags[first]; isTag {
+		differentPlaylist = func(tag string) bool { return c.Tags[tag] != firstID }
 	}
-	second = cmp.Or(pick(differentPlaylist, tags), pick(anyTag, unused, tags, exampleTags))
+	second = cmp.Or(
+		pick(func(tag string) bool { return differentPlaylist(tag) && notDefault(tag) }, tags),
+		pick(differentPlaylist, tags), // Tags on the default playlist work too
+		pick(anyTag, unused, tags, exampleTags),
+	)
 	return first, second
 }
 
+// Characters that join or modify the character before them
+const (
+	zeroWidthJoiner    = 0x200D
+	zeroWidthNonJoiner = 0x200C
+)
+
+// hiddenCharacters are invisible characters dropped from playlist names: the zero-width space,
+// bidi marks, embeddings, overrides and isolates, and the byte order mark. Other format characters
+// are kept, since joiners and emoji tag characters are part of words, emoji and flags.
+var hiddenCharacters = &unicode.RangeTable{R16: []unicode.Range16{
+	{Lo: 0x200B, Hi: 0x200B, Stride: 1},
+	{Lo: 0x200E, Hi: 0x200F, Stride: 1},
+	{Lo: 0x202A, Hi: 0x202E, Stride: 1},
+	{Lo: 0x2066, Hi: 0x2069, Stride: 1},
+	{Lo: 0xFEFF, Hi: 0xFEFF, Stride: 1},
+}}
+
 // cleanPlaylistName makes a playlist name safe to show on one line: control characters and line
-// or paragraph separators become spaces, invisible format characters (zero-width, bidi) are
-// dropped, runs of spaces are collapsed, and names over maxPlaylistNameLength characters are cut
-// with an ellipsis. It doesn't escape markdown; see escapeMarkdown.
+// or paragraph separators become spaces, hiddenCharacters are dropped, runs of spaces are
+// collapsed, and names over maxPlaylistNameLength characters are cut with an ellipsis.
+// It doesn't escape markdown; see escapeMarkdown.
 func cleanPlaylistName(name string) string {
 	name = strings.Map(func(r rune) rune {
 		switch {
 		case unicode.IsControl(r) || unicode.In(r, unicode.Zl, unicode.Zp):
 			return ' '
-		case unicode.Is(unicode.Cf, r):
+		case unicode.Is(hiddenCharacters, r):
 			return -1
 		}
 		return r
@@ -286,9 +308,23 @@ func cleanPlaylistName(name string) string {
 	if utf8.RuneCountInString(name) <= maxPlaylistNameLength {
 		return name
 	}
-	const ellipsis = "…"
 	runes := []rune(name)
-	return strings.TrimSpace(string(runes[:maxPlaylistNameLength-1])) + ellipsis
+	cut := maxPlaylistNameLength - 1 // Leaves room for the ellipsis
+	// Don't separate a character from what modifies or joins it, e.g. an accent or an emoji sequence
+	for cut > 0 && (extendsPrevious(runes[cut]) || runes[cut-1] == zeroWidthJoiner) {
+		cut--
+	}
+	return strings.TrimSpace(string(runes[:cut])) + "…"
+}
+
+// extendsPrevious reports whether r belongs with the character before it: a combining mark,
+// variation selector, joiner, emoji tag character or emoji skin tone modifier
+func extendsPrevious(r rune) bool {
+	return unicode.In(r, unicode.Mn, unicode.Me) ||
+		(r >= 0xFE00 && r <= 0xFE0F) ||
+		r == zeroWidthJoiner || r == zeroWidthNonJoiner ||
+		(r >= 0xE0020 && r <= 0xE007F) ||
+		(r >= 0x1F3FB && r <= 0x1F3FF)
 }
 
 // markdownEscaper escapes the characters that would break a masked link or format its text

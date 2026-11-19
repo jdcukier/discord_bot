@@ -209,6 +209,8 @@ func TestExampleTagNames(t *testing.T) {
 		{"aliases only", map[string][]string{"chill": {chillTestID}, "relax": {chillTestID}}, "chill", "gym"},
 		{"default playlist only", map[string][]string{"main": {defaultTestID}}, "gym", "chill"},
 		{"two playlists", map[string][]string{"b": {gymTestID}, "a": {gymTestID}, "c": {chillTestID}}, "a", "c"},
+		{"second tag on the default playlist", map[string][]string{"run": {gymTestID}, "main": {defaultTestID}}, "run", "main"},
+		{"other playlist preferred over the default", map[string][]string{"run": {gymTestID}, "main": {defaultTestID}, "zen": {chillTestID}}, "run", "zen"},
 		{"fallbacks are aliases", map[string][]string{"gym": {gymTestID}, "chill": {gymTestID}}, "chill", "party"},
 		{"fallbacks on the default playlist", map[string][]string{"gym": {defaultTestID}, "chill": {defaultTestID}}, "party", "chill"},
 		{"all fallbacks are aliases", map[string][]string{"gym": {gymTestID}, "chill": {gymTestID}, "party": {gymTestID}}, "chill", "gym"},
@@ -230,11 +232,21 @@ func TestCleanPlaylistName(t *testing.T) {
 	// Line breaks, separators and other control characters become spaces
 	lineSep, paraSep := string(rune(0x2028)), string(rune(0x2029))
 	assert.Equal(t, "a b c d e f", cleanPlaylistName("a\nb\r\nc"+lineSep+"d"+paraSep+"e\tf\x00"))
-	// Invisible format characters (zero-width space, bidi override and isolate, BOM) are dropped
+	// Invisible characters (zero-width space, bidi marks, override and isolate, BOM) are dropped
 	zeroWidth := string(rune(0x200b))
-	assert.Equal(t, "abcd", cleanPlaylistName("a"+zeroWidth+"b"+string(rune(0x202e))+"c"+string(rune(0x2066))+"d"+string(rune(0xfeff))))
+	assert.Equal(t, "abcdef", cleanPlaylistName("a"+zeroWidth+"b"+string(rune(0x202e))+"c"+string(rune(0x2066))+
+		"d"+string(rune(0xfeff))+"e"+string([]rune{0x200e, 0x200f})+"f"))
 	// Only invisible characters: treated as unknown
 	assert.Equal(t, "", cleanPlaylistName(zeroWidth+"\n"))
+
+	// Joiners and emoji tag characters are kept
+	for _, name := range []string{
+		string([]rune{0x1F469, 0x200D, 0x1F4BB}) + " coding",                                       // Woman technologist (ZWJ sequence)
+		string([]rune{0x1F3F4, 0xE0067, 0xE0062, 0xE0065, 0xE006E, 0xE0067, 0xE007F}) + " England", // Flag (tag sequence)
+		string([]rune{0x0645, 0x06CC, 0x200C, 0x062E, 0x0648, 0x0627, 0x0647, 0x0645}),             // Persian word with a ZWNJ
+	} {
+		assert.Equal(t, name, cleanPlaylistName(name))
+	}
 
 	// Long names are cut on a character boundary
 	long := strings.Repeat("é", maxPlaylistNameLength+5)
@@ -243,6 +255,15 @@ func TestCleanPlaylistName(t *testing.T) {
 	assert.Equal(t, strings.Repeat("é", maxPlaylistNameLength-1)+"…", got)
 	exact := strings.Repeat("x", maxPlaylistNameLength)
 	assert.Equal(t, exact, cleanPlaylistName(exact))
+
+	// A ZWJ sequence or an accent straddling the limit is dropped whole
+	pad := strings.Repeat("x", maxPlaylistNameLength-3)
+	emoji := string([]rune{0x1F469, 0x200D, 0x1F4BB})
+	assert.Equal(t, pad+"…", cleanPlaylistName(pad+emoji+"y"))
+	pad = strings.Repeat("x", maxPlaylistNameLength-2)
+	assert.Equal(t, pad+"…", cleanPlaylistName(pad+"e"+string(rune(0x0301))+"z"))
+	// An emoji with a skin tone modifier
+	assert.Equal(t, pad+"…", cleanPlaylistName(pad+string([]rune{0x1F44D, 0x1F3FD})+"z"))
 }
 
 func TestListTagsLongAndUnsafeNames(t *testing.T) {
