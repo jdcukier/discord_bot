@@ -32,7 +32,7 @@ Tags are managed in Discord with slash commands, and changes apply immediately:
 
 | Command | What it does |
 | --- | --- |
-| `/tags` | Lists the playlists and the tags for each one. Only you see the reply. |
+| `/tags` | Shows how to tag a song, then lists each playlist (linked, by name) with its tags, starting with the default playlist. Only you see the reply. |
 | `/tag add tag:relax playlist:<link>` | Creates `!relax` (and `+relax`) for the playlist. If the tag already exists, nothing changes. |
 | `/tag set tag:relax playlist:<link>` | Changes which playlist `!relax` adds to, creating the tag if it doesn't exist. |
 | `/tag remove tag:relax` | Deletes the tag. Songs tagged with it go to the default playlist. |
@@ -62,6 +62,6 @@ Tags used to point to several playlists. Older files and secrets are converted a
 
 | Variable | Default | Description |
 | --- | --- | --- |
-| `SPOTIFY_TRIGGER_PREFIX` | `!` | The single symbol that marks a tag. It can't be `+`, which marks tags that also add to the default playlist. Avoid `$` (Docker Compose treats it as a variable) and `#`/`:` (hashtags and `:emoji:` would look like tags). |
+| `SPOTIFY_TRIGGER_PREFIX` | `!` | The single symbol that marks a tag. It can't be `+`, which marks tags that also add to the default playlist, or `` ` ``, which marks code in Discord. Avoid `$` (Docker Compose treats it as a variable) and `#`/`:` (hashtags and `:emoji:` would look like tags). |
 | `SPOTIFY_REPLY_UNKNOWN_TRIGGERS` | `false` | When `true`, the bot replies `Unknown playlist: !name` when someone uses a tag that isn't configured. |
 | `SPOTIFY_TAGS_FILE` | `playlist-tags.json` | Where tags are saved. `docker-compose.yml` sets it to `/data/playlist-tags.json` on the volume. |

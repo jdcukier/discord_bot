@@ -58,7 +58,7 @@ func TestNewErrors(t *testing.T) {
 	_, err = New("!", "default-id", map[string]string{DefaultName: "x"}, false)
 	assert.Error(t, err, "reserved name")
 
-	for _, prefix := range []string{"", "!!", "a", "1", " ", "_", "-", PlusPrefix} {
+	for _, prefix := range []string{"", "!!", "a", "1", " ", "_", "-", PlusPrefix, "`"} {
 		_, err = New(prefix, "default-id", nil, false)
 		assert.Error(t, err, "prefix %q", prefix)
 	}
