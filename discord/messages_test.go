@@ -56,7 +56,7 @@ func TestAddTracksToPlaylistWithTriggers(t *testing.T) {
 		testLink + " !default !relaxing": {{"default-id", "relax-id"}},
 		testLink + " !relaxing !chill":   {{"relax-id", "chill-id"}},
 		testLink + " !unknown":           {{"default-id"}},
-		testLink + " +1":                 {{"default-id"}},
+		testLink + " +1 +vibes":          {{"default-id"}},
 		"no link here !relaxing":         nil,
 	}
 	for content, want := range tests {

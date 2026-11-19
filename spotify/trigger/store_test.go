@@ -34,7 +34,7 @@ func TestOpenStoreImportsOnce(t *testing.T) {
 
 	store, result := openTestStore(t, path, map[string][]string{"gym": {gymID}})
 	assert.True(t, result.Created)
-	assert.Empty(t, result.Changed)
+	assert.Empty(t, result.Dropped)
 	assert.Equal(t, map[string]string{"gym": gymID}, store.Config().Tags)
 
 	// Once the file exists, the seed is ignored
@@ -62,7 +62,7 @@ func TestOpenStoreConvertsSeed(t *testing.T) {
 		"empty":  {},
 	})
 	assert.True(t, result.Created)
-	assert.Equal(t, []string{"rehlax"}, result.Changed)
+	assert.Equal(t, map[string][]string{"rehlax": {defaultID}}, result.Dropped)
 	assert.Equal(t, map[string]string{"relax": chillID, "rehlax": chillID}, store.Config().Tags)
 }
 
@@ -73,16 +73,69 @@ func TestOpenStoreConvertsLegacyFile(t *testing.T) {
 
 	store, result := openTestStore(t, path, nil)
 	assert.False(t, result.Created)
-	assert.Equal(t, []string{"rehlax"}, result.Changed)
+	assert.Equal(t, map[string][]string{"rehlax": {defaultID}}, result.Dropped)
 	assert.Equal(t, map[string]string{"relax": chillID, "rehlax": chillID}, store.Config().Tags)
+	require.NoError(t, result.SaveErr)
+
+	// The original is backed up
+	assert.Equal(t, path+BackupSuffix, result.Backup)
+	backup, err := os.ReadFile(path + BackupSuffix)
+	require.NoError(t, err)
+	assert.Equal(t, legacy, string(backup))
 
 	// Saved in the current format, so it's only converted once
 	reopened, result := openTestStore(t, path, nil)
-	assert.Empty(t, result.Changed)
+	assert.Empty(t, result.Dropped)
+	assert.Empty(t, result.Backup)
 	assert.Equal(t, store.Config().Tags, reopened.Config().Tags)
 	data, err := os.ReadFile(path)
 	require.NoError(t, err)
 	assert.Contains(t, string(data), `"relax": "`+chillID+`"`)
+}
+
+func TestOpenStoreConvertsReadOnlyLegacyFile(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores directory permissions")
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "tags.json")
+	legacy := `{"tags": {"relax": ["` + chillID + `"]}}`
+	require.NoError(t, os.WriteFile(path, []byte(legacy), 0o600))
+	require.NoError(t, os.Chmod(dir, 0o500))
+	t.Cleanup(func() { os.Chmod(dir, 0o700) })
+
+	// The converted tags are used even though they can't be saved
+	store, result := openTestStore(t, path, nil)
+	require.Error(t, result.SaveErr)
+	assert.Equal(t, map[string]string{"relax": chillID}, store.Config().Tags)
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	assert.Equal(t, legacy, string(data), "the original is untouched")
+
+	// Saving is retried on the next change, backing up the original first
+	require.NoError(t, os.Chmod(dir, 0o700))
+	_, err = store.Set("gym", gymID)
+	require.NoError(t, err)
+	backup, err := os.ReadFile(path + BackupSuffix)
+	require.NoError(t, err)
+	assert.Equal(t, legacy, string(backup))
+	reopened, result := openTestStore(t, path, nil)
+	assert.Empty(t, result.Backup)
+	assert.Equal(t, map[string]string{"relax": chillID, "gym": gymID}, reopened.Config().Tags)
+}
+
+func TestOpenStoreCreateFails(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores directory permissions")
+	}
+	dir := t.TempDir()
+	require.NoError(t, os.Chmod(dir, 0o500))
+	t.Cleanup(func() { os.Chmod(dir, 0o700) })
+
+	store, result, err := OpenStore(filepath.Join(dir, "tags.json"), testSettings(t), map[string][]string{"gym": {gymID}})
+	require.Error(t, err)
+	assert.Nil(t, store)
+	assert.Equal(t, OpenResult{}, result)
 }
 
 func TestOpenStoreInvalidFile(t *testing.T) {

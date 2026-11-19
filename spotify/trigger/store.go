@@ -39,13 +39,20 @@ type Store struct {
 	path   string
 	mu     sync.Mutex // Serializes writes
 	config atomic.Pointer[Config]
+
+	legacy []byte // Earlier-format file contents, backed up before the file is first overwritten
 }
 
 // OpenResult describes what OpenStore did besides loading the tags
 type OpenResult struct {
-	Created bool     // The file didn't exist and was created from the seed
-	Changed []string // Tags converted from several playlists to one
+	Created bool                // The file didn't exist and was created from the seed
+	Dropped map[string][]string // Tags converted from several playlists to one, and the playlists they lost
+	Backup  string              // Where the earlier-format file was copied before being converted
+	SaveErr error               // Converting the file worked but saving it didn't; it's retried on the next change
 }
+
+// BackupSuffix is added to the path of an earlier-format tags file to back it up before conversion
+const BackupSuffix = ".v1.bak"
 
 // OpenStore loads the tags saved at path, using settings for everything else
 // (settings' own tags are ignored). If no file exists yet, it's created from seed,
@@ -66,9 +73,15 @@ func OpenStore(path string, settings *Config, seed map[string][]string) (*Store,
 			return nil, result, fmt.Errorf("invalid tags to import: %w", err)
 		}
 		var tags map[string]string
-		tags, result.Changed = ToTags(seed, settings.DefaultPlaylistID)
+		tags, result.Dropped = ToTags(seed, settings.DefaultPlaylistID)
+		if err := s.init(settings, tags); err != nil {
+			return nil, OpenResult{}, err
+		}
+		if err := s.save(tags); err != nil {
+			return nil, OpenResult{}, err
+		}
 		result.Created = true
-		return s, result, s.init(settings, tags, true)
+		return s, result, nil
 	case err != nil:
 		return nil, result, fmt.Errorf("failed to read %s: %w", path, err)
 	}
@@ -85,32 +98,31 @@ func OpenStore(path string, settings *Config, seed map[string][]string) (*Store,
 			return nil, result, fmt.Errorf("invalid tags in %s: %w", path, err)
 		}
 		var tags map[string]string
-		tags, result.Changed = ToTags(playlists, settings.DefaultPlaylistID)
-		if err := s.init(settings, tags, true); err != nil {
-			return nil, result, fmt.Errorf("failed to convert %s: %w", path, err)
+		tags, result.Dropped = ToTags(playlists, settings.DefaultPlaylistID)
+		if err := s.init(settings, tags); err != nil {
+			return nil, OpenResult{}, fmt.Errorf("failed to convert %s: %w", path, err)
 		}
+		// The converted tags work even if they can't be saved yet; save backs up the old file first
+		s.legacy = data
+		result.Backup = path + BackupSuffix
+		result.SaveErr = s.save(tags)
 		return s, result, nil
 	}
 	tags, err := normalizeTags(file.Tags)
 	if err != nil {
 		return nil, result, fmt.Errorf("invalid tags in %s: %w", path, err)
 	}
-	if err := s.init(settings, tags, false); err != nil {
+	if err := s.init(settings, tags); err != nil {
 		return nil, result, fmt.Errorf("invalid tags in %s: %w", path, err)
 	}
 	return s, result, nil
 }
 
-// init sets the store's initial tags, saving them if needed
-func (s *Store) init(settings *Config, tags map[string]string, save bool) error {
+// init sets the store's initial tags
+func (s *Store) init(settings *Config, tags map[string]string) error {
 	config, err := settings.withTags(tags)
 	if err != nil {
 		return err
-	}
-	if save {
-		if err := s.save(tags); err != nil {
-			return err
-		}
 	}
 	s.config.Store(config)
 	return nil
@@ -225,6 +237,11 @@ func (s *Store) update(current *Config, tags map[string]string) error {
 
 // save writes the tags to disk atomically, so a crash never leaves a half-written file
 func (s *Store) save(tags map[string]string) error {
+	if s.legacy != nil {
+		if err := s.backupLegacy(); err != nil {
+			return err
+		}
+	}
 	if tags == nil {
 		tags = map[string]string{}
 	}
@@ -260,6 +277,37 @@ func (s *Store) save(tags map[string]string) error {
 	if err := syncDir(dir); err != nil {
 		return fmt.Errorf("failed to save tags: %w", err)
 	}
+	return nil
+}
+
+// backupLegacy copies the earlier-format file next to it, so playlists dropped by the
+// conversion aren't lost and an older version of the bot can still be restored.
+// An existing backup is kept, since it's the original.
+func (s *Store) backupLegacy() error {
+	path := s.path + BackupSuffix
+	if _, err := os.Stat(path); err == nil {
+		s.legacy = nil
+		return nil
+	}
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return fmt.Errorf("failed to back up the old tags file: %w", err)
+	}
+	if _, err := f.Write(s.legacy); err != nil {
+		f.Close()
+		os.Remove(path)
+		return fmt.Errorf("failed to back up the old tags file: %w", err)
+	}
+	if err := f.Sync(); err != nil {
+		f.Close()
+		os.Remove(path)
+		return fmt.Errorf("failed to back up the old tags file: %w", err)
+	}
+	if err := f.Close(); err != nil {
+		os.Remove(path)
+		return fmt.Errorf("failed to back up the old tags file: %w", err)
+	}
+	s.legacy = nil
 	return nil
 }
 

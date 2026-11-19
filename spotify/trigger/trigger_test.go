@@ -186,8 +186,9 @@ func TestResolve(t *testing.T) {
 		{"plus default is default", link + " +default", []string{"default-id"}, nil},
 		{"aliases added once", link + " !relaxing !relax", []string{"relax-id"}, nil},
 		{"unknown only falls back to default", link + " !nope", []string{"default-id"}, []string{"!nope"}},
-		{"unknown alongside known", link + " !nope !gym +what", []string{"gym-id"}, []string{"!nope", "+what"}},
-		{"plus numbers aren't reported", link + " +1 !gym", []string{"gym-id"}, nil},
+		{"unknown alongside known", link + " !nope !gym !what", []string{"gym-id"}, []string{"!nope", "!what"}},
+		{"unknown plus words aren't reported", link + " +1 (+bonus track) !gym", []string{"gym-id"}, nil},
+		{"unknown plus word alone", link + " +vibes", []string{"default-id"}, nil},
 		{"plain numbers are reported", link + " !1", []string{"default-id"}, []string{"!1"}},
 		{"default keyword is case-insensitive", link + " !DEFAULT", []string{"default-id"}, nil},
 	}
@@ -212,7 +213,7 @@ func TestCustomPrefix(t *testing.T) {
 }
 
 func TestToTags(t *testing.T) {
-	tags, changed := ToTags(map[string][]string{
+	tags, dropped := ToTags(map[string][]string{
 		"relax":  {"relax-id"},
 		"rehlax": {"default-id", "relax-id"}, // default + one playlist: keeps the other one
 		"multi":  {"a-id", "default-id", "b-id"},
@@ -225,5 +226,8 @@ func TestToTags(t *testing.T) {
 		"multi":  "a-id",
 		"main":   "default-id",
 	}, tags)
-	assert.Equal(t, []string{"multi", "rehlax"}, changed)
+	assert.Equal(t, map[string][]string{
+		"rehlax": {"default-id"},
+		"multi":  {"default-id", "b-id"},
+	}, dropped)
 }

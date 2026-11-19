@@ -56,7 +56,7 @@ docker cp discord-bot:/data/playlist-tags.json .
 
 The first time the bot starts without that file, it creates it from the `SPOTIFY_PLAYLIST_TRIGGERS` secret (format `tag=playlistID[,playlistID...];tag=playlistID`). After that, the secret is ignored and can be deleted.
 
-Tags used to point to several playlists. Older files and secrets are converted automatically: each tag keeps its first playlist other than the default one, since `+tag` now covers the default. The bot logs a warning naming any tag that changed, and rewrites the file in the new format. If the file can't be read or written, the bot logs the error, falls back to the secret's tags, and `/tag` is unavailable until it's fixed. The bot logs `Loaded playlist triggers` with the tag names at startup.
+Tags used to point to several playlists. Older files and secrets are converted automatically: each tag keeps its first playlist other than the default one, since `+tag` now covers the default. The bot logs a warning for each tag that changed, listing the playlists it dropped, and rewrites the file in the new format. The original file is kept as `playlist-tags.json.v1.bak`, so dropped playlists can be recovered, and it's needed to roll back to an older version of the bot: copy it back over `playlist-tags.json`, because older versions can't read the new format. If the file can't be read or written, the bot logs the error, falls back to the secret's tags, and `/tag` is unavailable until it's fixed. The bot logs `Loaded playlist triggers` with the tag names at startup.
 
 ### Other settings
 

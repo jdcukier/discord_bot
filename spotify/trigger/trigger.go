@@ -3,7 +3,6 @@ package trigger
 
 import (
 	"fmt"
-	"maps"
 	"os"
 	"regexp"
 	"slices"
@@ -34,10 +33,7 @@ const namePattern = `[\p{L}\p{N}]+(?:[_-][\p{L}\p{N}]+)*`
 // any space, opening brackets/quotes, or Discord markdown (bold, italics, strikethrough, spoilers, code, quotes)
 const boundaryPattern = `(?:^|[\s\p{Z}\p{Ps}\p{Pi}*_~|"'\x60>])`
 
-var (
-	nameRegex   = regexp.MustCompile(`^` + namePattern + `$`)
-	digitsRegex = regexp.MustCompile(`^[0-9]+$`)
-)
+var nameRegex = regexp.MustCompile(`^` + namePattern + `$`)
 
 // Config represents the trigger to playlist mapping
 type Config struct {
@@ -152,25 +148,27 @@ func ParsePlaylists(s string) (map[string][]string, error) {
 
 // ToTags converts tags with several playlists to one playlist each, since "+tag" now
 // covers the default playlist. A tag keeps its first playlist other than the default one,
-// or the default playlist if that's all it had. changed lists the tags that lost playlists.
-func ToTags(playlists map[string][]string, defaultPlaylistID string) (tags map[string]string, changed []string) {
+// or the default playlist if that's all it had. dropped maps each tag that lost playlists to them.
+func ToTags(playlists map[string][]string, defaultPlaylistID string) (tags map[string]string, dropped map[string][]string) {
 	tags = make(map[string]string, len(playlists))
-	for _, name := range slices.Sorted(maps.Keys(playlists)) {
-		ids := playlists[name]
+	dropped = make(map[string][]string)
+	for name, ids := range playlists {
 		if len(ids) == 0 {
 			continue
 		}
 		others := slices.DeleteFunc(slices.Clone(ids), func(id string) bool { return id == defaultPlaylistID })
-		if len(others) == 0 {
-			tags[name] = defaultPlaylistID
-		} else {
-			tags[name] = others[0]
+		kept := defaultPlaylistID
+		if len(others) > 0 {
+			kept = others[0]
 		}
-		if len(ids) > 1 {
-			changed = append(changed, name)
+		tags[name] = kept
+		for _, id := range ids {
+			if id != kept {
+				dropped[name] = append(dropped[name], id)
+			}
 		}
 	}
-	return tags, changed
+	return tags, dropped
 }
 
 // Extract returns the triggers in the content, in order and without duplicates
@@ -196,8 +194,8 @@ func (c *Config) Resolve(content string) (playlistIDs []string, unknown []string
 		}
 		id, ok := c.Tags[t.Name]
 		if !ok {
-			// "+1" and the like are reactions, not typos
-			if !(t.Plus && digitsRegex.MatchString(t.Name)) {
+			// Unknown "+" words are usually ordinary text ("+1", "(+bonus track)"), not typos
+			if !t.Plus {
 				unknown = append(unknown, c.Format(t))
 			}
 			continue
