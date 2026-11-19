@@ -638,6 +638,74 @@ func TestStoreSetErrors(t *testing.T) {
 	assert.Empty(t, store.Config().Tags)
 }
 
+// mathA is MATHEMATICAL BOLD SMALL A, a letter outside the Basic Multilingual Plane: 2 UTF-16 code units
+const mathA = "\U0001D41A"
+
+func TestValidateName(t *testing.T) {
+	long := strings.Repeat("a", MaxNameLength+1)
+	for _, name := range []string{"gym", "lo-fi", "road_trip", "café", strings.Repeat("a", MaxNameLength), strings.Repeat("é", MaxNameLength), mathA} {
+		assert.NoError(t, ValidateName(name), name)
+		assert.NoError(t, ValidateNewName(name), name)
+	}
+	for _, name := range []string{"", "Gym", "two words", "gym-", "-gym", "a--b", DefaultName} {
+		assert.Error(t, ValidateName(name), name)
+		assert.Error(t, ValidateNewName(name), name)
+	}
+
+	// Only new names are limited, as Discord counts length (UTF-16 code units)
+	assert.Equal(t, 2, NameLength(mathA))
+	for _, name := range []string{long, strings.Repeat("é", MaxNameLength+1), strings.Repeat(mathA, 26), strings.Repeat(mathA, 50)} {
+		assert.NoError(t, ValidateName(name), name)
+		assert.Error(t, ValidateNewName(name), name)
+	}
+	assert.NoError(t, ValidateNewName(strings.Repeat(mathA, 25)))
+	assert.EqualError(t, ValidateNewName(long), `tag name "`+long+`" is too long: use at most 50 characters`)
+}
+
+func TestOpenStoreKeepsLongNames(t *testing.T) {
+	long := strings.Repeat("a", MaxNameLength+1)
+
+	// A hand-edited YAML file loads, and the long tag can be removed
+	path := filepath.Join(t.TempDir(), "tags.yaml")
+	content := "playlists:\n  - id: " + gymID + "\n    tags:\n      - gym\n      - " + long + "\n"
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o600))
+	store, result := openTestStore(t, path, nil)
+	assert.Equal(t, map[string]string{"gym": gymID, long: gymID}, store.Config().Tags)
+	assert.Equal(t, []string{long}, result.LongNames)
+	_, err := store.Remove(long)
+	require.NoError(t, err)
+	assert.Equal(t, map[string]string{"gym": gymID}, store.Config().Tags)
+	_, result = openTestStore(t, path, nil)
+	assert.Empty(t, result.LongNames)
+
+	// The seed converts
+	store, result = openTestStore(t, filepath.Join(t.TempDir(), "tags.yaml"), map[string][]string{long: {gymID}})
+	assert.True(t, result.Created)
+	assert.Equal(t, map[string]string{long: gymID}, store.Config().Tags)
+	assert.Equal(t, []string{long}, result.LongNames)
+
+	// Both legacy JSON formats convert
+	for _, legacy := range []string{
+		`{"tags": {"` + long + `": "` + gymID + `"}}`,
+		`{"tags": {"` + long + `": ["` + gymID + `"]}}`,
+	} {
+		dir := t.TempDir()
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "tags.json"), []byte(legacy), 0o600))
+		store, result = openTestStore(t, filepath.Join(dir, "tags.yaml"), nil)
+		assert.True(t, result.Converted, legacy)
+		assert.Equal(t, map[string]string{long: gymID}, store.Config().Tags, legacy)
+	}
+
+	// But long names can't be created
+	_, err = store.Add(long+"b", gymID)
+	assert.ErrorContains(t, err, "too long")
+	_, err = store.Set(long+"b", gymID)
+	assert.ErrorContains(t, err, "too long")
+	_, err = store.Add(strings.Repeat(mathA, 26), gymID)
+	assert.ErrorContains(t, err, "too long")
+	assert.Equal(t, map[string]string{long: gymID}, store.Config().Tags)
+}
+
 func TestStoreAddAliases(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "tags.yaml")
 	store, _ := openTestStore(t, path, map[string][]string{"gym": {gymID}, "workout": {gymID}, "chill": {chillID}})
@@ -683,6 +751,30 @@ func TestStoreAddAliases(t *testing.T) {
 	// Changes apply to message routing immediately
 	got, _ := store.Config().Resolve("link !cardio")
 	assert.Equal(t, []string{gymID}, got)
+}
+
+func TestStoreAddAliasesNameLength(t *testing.T) {
+	store, _ := openTestStore(t, filepath.Join(t.TempDir(), "tags.yaml"), map[string][]string{"gym": {gymID}})
+	longest, tooLong := strings.Repeat("a", MaxNameLength), strings.Repeat("b", MaxNameLength+1)
+	wide := strings.Repeat(mathA, 26) // 26 characters, but 52 UTF-16 code units
+	invalid := strings.Repeat("ab.", 30)
+	result, err := store.AddAliases("gym", []string{longest, tooLong, wide, invalid})
+	require.NoError(t, err)
+	assert.Equal(t, []string{longest}, result.Added)
+	assert.Equal(t, []SkippedAlias{
+		{Name: tooLong, Reason: AliasTooLong},
+		{Name: wide, Reason: AliasTooLong},
+		{Name: invalid, Reason: AliasInvalid},
+	}, result.Skipped)
+	assert.Equal(t, map[string]string{"gym": gymID, longest: gymID}, store.Config().Tags)
+
+	// A long tag saved before the limit is reported like any existing tag
+	path := filepath.Join(t.TempDir(), "tags.yaml")
+	require.NoError(t, os.WriteFile(path, []byte("playlists:\n  - id: "+gymID+"\n    tags:\n      - gym\n      - "+tooLong+"\n"), 0o600))
+	store, _ = openTestStore(t, path, nil)
+	result, err = store.AddAliases("gym", []string{tooLong})
+	require.NoError(t, err)
+	assert.Equal(t, []SkippedAlias{{Name: tooLong, Reason: AliasExists}}, result.Skipped)
 }
 
 func TestStoreAddAliasesToDefault(t *testing.T) {

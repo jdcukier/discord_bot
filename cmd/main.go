@@ -224,6 +224,10 @@ func loadPlaylistTags() (discord.TriggerSource, discord.TagStore) {
 	}
 	logDroppedPlaylists(store.Config(), result.Dropped)
 	logStoreMigration(path, result)
+	for _, name := range result.LongNames {
+		logger.Warn(fmt.Sprintf("Playlist tag is longer than %d characters; it still works, but /tag can't change or remove it",
+			trigger.MaxNameLength), zap.String(zapkey.Name, settings.Prefix+name))
+	}
 	switch {
 	case result.Created && len(seed) > 0:
 		logger.Info("Created the playlist tags file from "+envvar.SpotifyPlaylistTriggers, zap.String(zapkey.Path, path))

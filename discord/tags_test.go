@@ -263,6 +263,95 @@ func TestAliasTagErrors(t *testing.T) {
 	assert.Len(t, store.Config().Tags, 11)
 }
 
+func TestAliasTagNameLength(t *testing.T) {
+	store := newTestTagStore(t, map[string][]string{"gym": {gymTestID}})
+	longest := strings.Repeat("a", trigger.MaxNameLength)
+	reply := aliasTag(store, "gym", longest+" "+strings.Repeat("b", 150)+" "+strings.Repeat("c", 51))
+	assert.False(t, reply.private)
+	// Long names are cut in the reply
+	cut := "`" + strings.Repeat("b", trigger.MaxNameLength) + "…`, `" + strings.Repeat("c", trigger.MaxNameLength) + "…`"
+	assert.Equal(t, "✅ **Added aliases for `!gym`**\n"+
+		"🎧 **[Untitled playlist]"+testPlaylistTarget(gymTestID)+"** — **`"+longest+"`**, `gym`\n"+
+		"-# Skipped "+cut+" (longer than 50 characters)", reply.content)
+	assert.Equal(t, map[string]string{"gym": gymTestID, longest: gymTestID}, store.Config().Tags)
+
+	// Length is counted like Discord does, so 26 letters outside the Basic Multilingual Plane are too long.
+	// Names that are too long and also invalid are just invalid.
+	wide := strings.Repeat("\U0001D41A", 26)
+	invalid := strings.Repeat("ab.", 30)
+	reply = aliasTag(store, "gym", wide+" "+invalid)
+	assert.True(t, reply.private)
+	assert.Equal(t, "No tags added to `!gym`'s playlist:\n"+
+		"- Skipped `"+wide+"` (longer than 50 characters)\n"+
+		"- Skipped `"+invalid[:trigger.MaxNameLength]+"…` (invalid name)", reply.content)
+}
+
+func TestAliasTagBlankNames(t *testing.T) {
+	store := newTestTagStore(t, map[string][]string{"gym": {gymTestID}})
+	// Names made only of backticks have nothing left to show in a code span
+	reply := aliasTag(store, "gym", "` `` a`b "+strings.Repeat("`", 60))
+	assert.True(t, reply.private)
+	assert.Equal(t, "No tags added to `!gym`'s playlist:\n- Skipped (blank), `ab` (invalid names)", reply.content)
+}
+
+func TestAliasTagPrivateReplyFits(t *testing.T) {
+	// 10 names taken by 10 playlists with names that escape to 200 bytes
+	playlists := map[string][]string{"gym": {gymTestID}}
+	var names []string
+	for i := range 10 {
+		name := fmt.Sprintf("tag%d", i)
+		playlists[name] = []string{fmt.Sprintf("OTHER%017d", i)}
+		names = append(names, name)
+	}
+	store := newTestTagStore(t, playlists)
+	for i := range 10 {
+		require.NoError(t, store.SetPlaylistName(fmt.Sprintf("OTHER%017d", i), strings.Repeat("*", 100)))
+	}
+	reply := aliasTag(store, "gym", strings.Join(names, " "))
+	assert.True(t, reply.private)
+	assert.LessOrEqual(t, len(reply.content), maxMessageLength)
+	// Whole lines are left out, marked with an ellipsis
+	lines := strings.Split(reply.content, "\n")
+	assert.Equal(t, "No tags added to `!gym`'s playlist:", lines[0])
+	assert.Equal(t, "- …", lines[len(lines)-1])
+	assert.Greater(t, len(lines), 3)
+	for _, line := range lines[1 : len(lines)-1] {
+		assert.True(t, strings.HasPrefix(line, "- Skipped `tag"), line)
+		assert.True(t, strings.HasSuffix(line, ", use /tag set to move it)"), line)
+	}
+}
+
+func TestAliasTagKeepsNewTagsOverSubtext(t *testing.T) {
+	// A playlist with a long name gets 5 long aliases, while 3 names on playlists with long names are
+	// skipped. Their subtext parts nearly fill the room left after 600 bytes for the playlist line,
+	// which is less than the line needs to keep the new tags.
+	note := string(rune(0x1F3B5))
+	emoji, takenName := strings.Repeat(note, 100), strings.Repeat(note, 97)
+	playlists := map[string][]string{"gym": {gymTestID}}
+	for i := range 3 {
+		playlists[fmt.Sprintf("taken%d", i)] = []string{fmt.Sprintf("OTHER%017d", i)}
+	}
+	store := newTestTagStore(t, playlists)
+	require.NoError(t, store.SetPlaylistName(gymTestID, emoji))
+	for i := range 3 {
+		require.NoError(t, store.SetPlaylistName(fmt.Sprintf("OTHER%017d", i), takenName))
+	}
+	var aliases []string
+	for i := range 5 {
+		aliases = append(aliases, fmt.Sprintf("new-alias-number-%010d", i))
+	}
+	reply := aliasTag(store, "gym", strings.Join(aliases, " ")+" taken0 taken1 taken2")
+	assert.False(t, reply.private)
+	assert.LessOrEqual(t, len(reply.content), maxMessageLength)
+	lines := strings.Split(reply.content, "\n")
+	require.Len(t, lines, 3)
+	for _, alias := range aliases {
+		assert.Contains(t, lines[1], "**`"+alias+"`**")
+	}
+	// The subtext was cut instead
+	assert.True(t, strings.HasSuffix(lines[2], " · …"), lines[2])
+}
+
 func TestTagChangeReplyFitsInAMessage(t *testing.T) {
 	many := map[string][]string{}
 	for i := range 80 {
@@ -615,6 +704,13 @@ func TestAutocompleteTags(t *testing.T) {
 	require.Len(t, choices, 1)
 	assert.Equal(t, "!default", choices[0].Name)
 	assert.Equal(t, "default", choices[0].Value)
+
+	// Names too long for a choice are left out, so one can't break autocomplete
+	tooLong := strings.Repeat("a", maxChoiceLength)
+	c := &trigger.Config{Prefix: "!", Tags: map[string]string{tooLong: gymTestID, tooLong[1:]: gymTestID}}
+	choices = autocompleteTags(c, "", false)
+	require.Len(t, choices, 1)
+	assert.Equal(t, "!"+tooLong[1:], choices[0].Name)
 }
 
 func TestTagCommandsDefinitions(t *testing.T) {
