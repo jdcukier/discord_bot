@@ -37,8 +37,11 @@ const (
 	maxNewTagsLength = 300
 )
 
-// maxMessageLength is Discord's limit on the length of a message
-const maxMessageLength = 2000
+// Discord's limits on the length of a message, and of an autocomplete choice's name and value
+const (
+	maxMessageLength = 2000
+	maxChoiceLength  = 100
+)
 
 // TagStore reads and changes the playlist tags
 type TagStore interface {
@@ -61,7 +64,7 @@ func tagCommands() []*discordgo.ApplicationCommand {
 			Description:  desc,
 			Required:     true,
 			Autocomplete: autocomplete,
-			MaxLength:    50,
+			MaxLength:    trigger.MaxNameLength,
 		}
 	}
 	return []*discordgo.ApplicationCommand{
@@ -441,16 +444,23 @@ const minPlaylistLineLength = 600
 // users or Spotify control (e.g. with playlistLabel or escapeMarkdown), and keep each one on a single
 // line, since a newline breaks the layout.
 //
-// The reply fits in a message. If it's too long, the last subtext parts are left out first, as long
-// as the playlist line needs the room, then the playlist line's tags are left out, bolded ones last.
+// The reply fits in a message. If it's too long, the last subtext parts are left out first, while the
+// playlist line needs the room (up to minPlaylistLineLength, or more to keep the link and bolded tags),
+// then the playlist line's tags are left out, bolded ones last.
 func tagChangeReply(c *trigger.Config, header, playlistID, name string, bold []string, subtext ...string) string {
 	subtext = slices.DeleteFunc(slices.Clone(subtext), func(part string) bool { return part == "" })
 	tags := tagsByPlaylist(c)[playlistID]
 	lines := []string{header}
 	if len(subtext) > 0 {
-		lineRoom := min(len(playlistLine(c, playlistID, name, tags, bold)), minPlaylistLineLength)
+		// Keep room for the link with the bolded tags, at least, so the subtext is cut before them
+		unbolded := map[string]bool{}
+		for _, tag := range tags {
+			unbolded[tag] = !slices.Contains(bold, tag)
+		}
+		boldOnly := playlistLineWithout(c, playlistID, name, tags, bold, unbolded)
+		lineRoom := min(len(playlistLine(c, playlistID, name, tags, bold)), max(minPlaylistLineLength, len(boldOnly)))
 		room := maxMessageLength - len(header) - len("\n") - lineRoom - len("\n")
-		if sub := fitSubtext(subtext, room); sub != "" {
+		if sub := joinFitting("-# ", subtext, subtextSeparator, room); sub != "" {
 			lines = append(lines, sub)
 		}
 	}
@@ -460,16 +470,16 @@ func tagChangeReply(c *trigger.Config, header, playlistID, name string, bold []s
 	return truncate(strings.Join(lines, "\n"), maxMessageLength)
 }
 
-// fitSubtext joins the subtext parts on a subtext line of at most limit bytes, leaving out the
-// last parts (marked with an ellipsis) if needed. It returns "" if not even one part fits whole.
-func fitSubtext(parts []string, limit int) string {
+// joinFitting joins the parts with sep after prefix in at most limit bytes, leaving out the last
+// parts (marked with an ellipsis part) if needed. It returns "" if not even one part fits whole.
+func joinFitting(prefix string, parts []string, sep string, limit int) string {
 	for n := len(parts); n > 0; n-- {
 		kept := slices.Clone(parts[:n])
 		if n < len(parts) {
 			kept = append(kept, "…")
 		}
-		if line := "-# " + strings.Join(kept, subtextSeparator); len(line) <= limit {
-			return line
+		if s := prefix + strings.Join(kept, sep); len(s) <= limit {
+			return s
 		}
 	}
 	return ""
@@ -623,8 +633,10 @@ func aliasTag(store TagStore, rawExisting, rawNames string) tagReply {
 	nameOf := cachedPlaylistNames(store)
 	skipped := skippedAliases(c, result.Skipped, nameOf)
 	if len(result.Added) == 0 {
-		lines := append([]string{fmt.Sprintf("No tags added to `%s%s`'s playlist:", c.Prefix, existing)}, skipped...)
-		return tagReply{content: strings.Join(lines, "\n- "), private: true}
+		const sep = "\n- "
+		header := fmt.Sprintf("No tags added to `%s%s`'s playlist:", c.Prefix, existing)
+		content := cmp.Or(joinFitting(header+sep, skipped, sep, maxMessageLength), header+sep+"…")
+		return tagReply{content: content, private: true}
 	}
 	header := fmt.Sprintf("✅ **Added aliases for `%s%s`**", c.Prefix, existing)
 	content := tagChangeReply(c, header, result.PlaylistID, nameOf(result.PlaylistID), result.Added, skipped...)
@@ -636,17 +648,21 @@ func aliasTag(store TagStore, rawExisting, rawNames string) tagReply {
 func skippedAliases(c *trigger.Config, skipped []trigger.SkippedAlias, name func(id string) string) []string {
 	type group struct {
 		reason     trigger.AliasSkip
+		tooLong    bool // An invalid name that's too long, which deserves its own reason
 		playlistID string
 	}
 	var groups []group
 	names := map[group][]string{}
 	for _, skip := range skipped {
-		g := group{skip.Reason, skip.PlaylistID}
+		tooLong := skip.Reason == trigger.AliasInvalid && utf8.RuneCountInString(skip.Name) > trigger.MaxNameLength
+		g := group{skip.Reason, tooLong, skip.PlaylistID}
 		if _, ok := names[g]; !ok {
 			groups = append(groups, g)
 		}
-		// Invalid names are shown as typed, so backticks would end the code span
-		names[g] = append(names[g], "`"+strings.ReplaceAll(skip.Name, "`", "")+"`")
+		// Different invalid names can look the same once cleaned up, e.g. as (blank)
+		if shown := skippedAliasName(skip.Name); !slices.Contains(names[g], shown) {
+			names[g] = append(names[g], shown)
+		}
 	}
 	parts := make([]string, 0, len(groups))
 	for _, g := range groups {
@@ -660,12 +676,28 @@ func skippedAliases(c *trigger.Config, skipped []trigger.SkippedAlias, name func
 				playlistLabel(c, g.playlistID, name(g.playlistID)), plural(one, "it", "them"))
 		case trigger.AliasInvalid:
 			reason = plural(one, "invalid name", "invalid names")
+			if g.tooLong {
+				reason = fmt.Sprintf("longer than %d characters", trigger.MaxNameLength)
+			}
 		case trigger.AliasReserved:
 			reason = "reserved for the default playlist"
 		}
 		parts = append(parts, fmt.Sprintf("Skipped %s (%s)", strings.Join(names[g], ", "), reason))
 	}
 	return parts
+}
+
+// skippedAliasName formats a name /tag alias left out as code. Invalid names are shown as typed,
+// so backticks, which would end the code span, are dropped, and names too long to be tags are cut.
+func skippedAliasName(name string) string {
+	name = strings.ReplaceAll(name, "`", "")
+	if name == "" {
+		return "(blank)"
+	}
+	if runes := []rune(name); len(runes) > trigger.MaxNameLength {
+		name = string(runes[:trigger.MaxNameLength]) + "…"
+	}
+	return "`" + name + "`"
 }
 
 // plural returns singular if one is true, and plural otherwise
@@ -687,7 +719,9 @@ func autocompleteTags(c *trigger.Config, typed string, withDefault bool) []*disc
 	slices.Sort(names)
 	choices := []*discordgo.ApplicationCommandOptionChoice{}
 	for _, name := range names {
-		if !strings.Contains(name, typed) {
+		// Discord rejects choices over 100 characters. Tag names are shorter, but this keeps
+		// one bad tag from breaking autocomplete for everyone.
+		if !strings.Contains(name, typed) || utf8.RuneCountInString(c.Prefix+name) > maxChoiceLength {
 			continue
 		}
 		choices = append(choices, &discordgo.ApplicationCommandOptionChoice{Name: c.Prefix + name, Value: name})

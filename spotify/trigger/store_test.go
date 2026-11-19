@@ -545,6 +545,29 @@ func TestStoreSetErrors(t *testing.T) {
 	assert.Empty(t, store.Config().Tags)
 }
 
+func TestValidateName(t *testing.T) {
+	for _, name := range []string{"gym", "lo-fi", "road_trip", "café", strings.Repeat("a", MaxNameLength), strings.Repeat("é", MaxNameLength)} {
+		assert.NoError(t, ValidateName(name), name)
+	}
+	for _, name := range []string{"", "Gym", "two words", "gym-", "-gym", "a--b", DefaultName, strings.Repeat("a", MaxNameLength+1), strings.Repeat("é", MaxNameLength+1)} {
+		assert.Error(t, ValidateName(name), name)
+	}
+	assert.EqualError(t, ValidateName(strings.Repeat("a", 51)), `tag name "`+strings.Repeat("a", 51)+`" is too long: use at most 50 characters`)
+}
+
+func TestOpenStoreNameLength(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "tags.yaml")
+	longest := strings.Repeat("a", MaxNameLength)
+	content := "playlists:\n  - id: " + gymID + "\n    tags:\n      - " + longest + "\n"
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o600))
+	store, _ := openTestStore(t, path, nil)
+	assert.Equal(t, map[string]string{longest: gymID}, store.Config().Tags)
+
+	require.NoError(t, os.WriteFile(path, []byte(strings.Replace(content, longest, longest+"a", 1)), 0o600))
+	_, _, err := OpenStore(path, testSettings(t), nil)
+	assert.ErrorContains(t, err, "too long")
+}
+
 func TestStoreAddAliases(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "tags.yaml")
 	store, _ := openTestStore(t, path, map[string][]string{"gym": {gymID}, "workout": {gymID}, "chill": {chillID}})
@@ -590,6 +613,16 @@ func TestStoreAddAliases(t *testing.T) {
 	// Changes apply to message routing immediately
 	got, _ := store.Config().Resolve("link !cardio")
 	assert.Equal(t, []string{gymID}, got)
+}
+
+func TestStoreAddAliasesNameLength(t *testing.T) {
+	store, _ := openTestStore(t, filepath.Join(t.TempDir(), "tags.yaml"), map[string][]string{"gym": {gymID}})
+	longest, tooLong := strings.Repeat("a", MaxNameLength), strings.Repeat("b", MaxNameLength+1)
+	result, err := store.AddAliases("gym", []string{longest, tooLong})
+	require.NoError(t, err)
+	assert.Equal(t, []string{longest}, result.Added)
+	assert.Equal(t, []SkippedAlias{{Name: tooLong, Reason: AliasInvalid}}, result.Skipped)
+	assert.Equal(t, map[string]string{"gym": gymID, longest: gymID}, store.Config().Tags)
 }
 
 func TestStoreAddAliasesToDefault(t *testing.T) {

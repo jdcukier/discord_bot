@@ -23,6 +23,9 @@ const (
 
 	// DefaultName is the reserved trigger for the default playlist
 	DefaultName = "default"
+
+	// MaxNameLength is the most characters a tag name (without the prefix) may have
+	MaxNameLength = 50
 )
 
 // namePattern matches a valid trigger name (without the prefix).

@@ -16,6 +16,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"go.yaml.in/yaml/v3"
 
@@ -437,7 +438,8 @@ type AliasResult struct {
 }
 
 // AddAliases creates tags pointing to the same playlist as an existing tag, or as the default playlist
-// for DefaultName. Names that are already tags or aren't valid are skipped, along with repeats.
+// for DefaultName. Names that are already tags or aren't valid (see ValidateName) are skipped; repeats
+// are ignored. Names must already be normalized: lowercase, without the prefix.
 // All the new tags are saved in one write, so either all of them are added or none are.
 func (s *Store) AddAliases(existing string, names []string) (AliasResult, error) {
 	s.mu.Lock()
@@ -656,10 +658,14 @@ func (c *Config) withTags(tags map[string]string) (*Config, error) {
 	return New(c.Prefix, c.DefaultPlaylistID, tags, c.ReplyUnknown)
 }
 
-// ValidateName checks that a tag name (without the prefix) is lowercase, valid, and not reserved
+// ValidateName checks that a tag name (without the prefix) is lowercase, valid, at most MaxNameLength
+// characters, and not reserved
 func ValidateName(name string) error {
 	if !nameRegex.MatchString(name) || name != strings.ToLower(name) {
 		return fmt.Errorf("invalid tag name %q: use letters and numbers, optionally joined by a single - or _", name)
+	}
+	if utf8.RuneCountInString(name) > MaxNameLength {
+		return fmt.Errorf("tag name %q is too long: use at most %d characters", name, MaxNameLength)
 	}
 	if name == DefaultName {
 		return fmt.Errorf("%q is reserved for the default playlist", DefaultName)
