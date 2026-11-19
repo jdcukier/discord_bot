@@ -17,6 +17,10 @@ import (
 // The caller should trigger the full OAuth flow on receiving this error.
 var ErrAuthRequired = errors.New("spotify authentication required")
 
+// ErrAuthPending is returned when an operation was queued until the user connects Spotify,
+// and will be retried automatically. The auth flow is already running, so callers shouldn't start it.
+var ErrAuthPending = errors.New("queued until spotify is connected")
+
 // TokenData is the token structure stored/returned by the worker.
 // expires_at is a Unix timestamp set by the worker at write time.
 type TokenData struct {

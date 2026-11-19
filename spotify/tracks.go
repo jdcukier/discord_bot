@@ -18,7 +18,8 @@ import (
 // -- Tracks ---
 
 // AddTracksToPlaylist adds tracks to each of the given playlists from a list of track URLs.
-// If the user has no Spotify token, auth is triggered once and every playlist is retried automatically.
+// If the user has no Spotify token, auth is triggered once, every playlist is retried automatically,
+// and worker.ErrAuthPending is returned, since the tracks weren't added yet.
 func (c *Client) AddTracksToPlaylist(ctx context.Context, userID string, trackURLs []string, playlistIDs ...string) error {
 	err := c.doAddTracksToPlaylists(ctx, userID, trackURLs, playlistIDs)
 
@@ -28,7 +29,7 @@ func (c *Client) AddTracksToPlaylist(ctx context.Context, userID string, trackUR
 
 	if errors.Is(err, worker.ErrAuthRequired) {
 		c.handleAuthRequired(ctx, userID, trackURLs, playlistIDs)
-		return nil // Return nil because we've handled/queued the retry
+		return worker.ErrAuthPending // Handled: the retry is queued
 	}
 
 	c.handleSpotifyError(ctx, err, "add-tracks", userID)

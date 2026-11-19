@@ -15,7 +15,7 @@ const testPlaylistID = "0123456789abcdefghijkl"
 
 func setTagEnv(t *testing.T, triggers string) string {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "tags.json")
+	path := filepath.Join(t.TempDir(), "tags.yaml")
 	t.Setenv(envvar.SpotifyTagsFile, path)
 	t.Setenv(envvar.SpotifyPlaylistID, "default-id")
 	t.Setenv(envvar.SpotifyPlaylistTriggers, triggers)
@@ -54,4 +54,34 @@ func TestLoadPlaylistTagsInvalidSecretWithoutFile(t *testing.T) {
 	// No empty file that would hide the tags once the secret is fixed
 	_, err := os.Stat(path)
 	assert.ErrorIs(t, err, os.ErrNotExist)
+}
+
+func TestLoadPlaylistTagsConvertsJSONFile(t *testing.T) {
+	path := setTagEnv(t, "not valid")
+	jsonPath := filepath.Join(filepath.Dir(path), "tags.json")
+	require.NoError(t, os.WriteFile(jsonPath, []byte(`{"tags": {"gym": "`+testPlaylistID+`"}}`), 0o600))
+
+	// The invalid secret is ignored, since there are tags to convert
+	triggers, tags := loadPlaylistTags()
+	require.NotNil(t, triggers)
+	require.NotNil(t, tags, "/tag stays enabled")
+	assert.Equal(t, map[string]string{"gym": testPlaylistID}, triggers.Config().Tags)
+	assert.FileExists(t, path)
+	assert.FileExists(t, jsonPath+".bak")
+	assert.NoFileExists(t, jsonPath)
+}
+
+func TestLoadPlaylistTagsJSONPath(t *testing.T) {
+	// SPOTIFY_TAGS_FILE still points to the JSON file of earlier versions
+	path := setTagEnv(t, "")
+	jsonPath := filepath.Join(filepath.Dir(path), "tags.json")
+	t.Setenv(envvar.SpotifyTagsFile, jsonPath)
+	require.NoError(t, os.WriteFile(jsonPath, []byte(`{"tags": {"gym": "`+testPlaylistID+`"}}`), 0o600))
+
+	triggers, tags := loadPlaylistTags()
+	require.NotNil(t, triggers)
+	require.NotNil(t, tags)
+	assert.Equal(t, map[string]string{"gym": testPlaylistID}, triggers.Config().Tags)
+	assert.FileExists(t, path, "saved as YAML next to it")
+	assert.NoFileExists(t, jsonPath)
 }

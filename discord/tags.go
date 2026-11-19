@@ -126,6 +126,8 @@ func registerTagCommands(s *discordgo.Session, appID string) bool {
 type tagReply struct {
 	content string
 	private bool // Only shown to the user who ran the command
+
+	playlistID string // Playlist the command's tag adds to, if it succeeded, so its name can be looked up
 }
 
 // PlaylistNamer looks up playlist names. It returns "" for playlists whose name isn't known.
@@ -388,7 +390,7 @@ func changeTag(store TagStore, rawName, rawPlaylist string, replace bool) tagRep
 		return tagReply{content: failure + err.Error(), private: true}
 	}
 	if previous == playlistID {
-		return tagReply{content: fmt.Sprintf("`%s%s` already adds to that playlist.", c.Prefix, name), private: true}
+		return tagReply{content: fmt.Sprintf("`%s%s` already adds to that playlist.", c.Prefix, name), private: true, playlistID: playlistID}
 	}
 	if previous != "" && !replace {
 		return tagReply{content: fmt.Sprintf("`%s%s` already adds to %s. Use `/tag set` to change its playlist.",
@@ -402,7 +404,7 @@ func changeTag(store TagStore, rawName, rawPlaylist string, replace bool) tagRep
 	if playlistID != c.DefaultPlaylistID && !slices.Contains(slices.Collect(maps.Values(c.Tags)), playlistID) {
 		msg += "\nThe playlist must be collaborative, or everyone else's songs can't be added to it."
 	}
-	return tagReply{content: msg}
+	return tagReply{content: msg, playlistID: playlistID}
 }
 
 // removeTag handles /tag remove

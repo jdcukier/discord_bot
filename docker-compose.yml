@@ -9,7 +9,7 @@ services:
     env_file: .env
     environment:
       # Playlist tags managed with /tag; the volume keeps them across redeploys
-      SPOTIFY_TAGS_FILE: /data/playlist-tags.json
+      SPOTIFY_TAGS_FILE: /data/playlist-tags.yaml
     volumes:
       - discord-bot-data:/data
     networks:

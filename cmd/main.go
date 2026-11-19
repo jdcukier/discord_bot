@@ -25,7 +25,7 @@ import (
 )
 
 // defaultTagsFile is where playlist tags are saved when SPOTIFY_TAGS_FILE isn't set
-const defaultTagsFile = "playlist-tags.json"
+const defaultTagsFile = "playlist-tags.yaml"
 
 type Client interface {
 	fmt.Stringer
@@ -86,7 +86,7 @@ func run() error {
 	}
 
 	// Initialize the Spotify Discord bot with the spotify client
-	spotifyBot, err := newSpotifyBot(spotifyClient)
+	spotifyBot, err := newSpotifyBot(spotifyClient, spotifyClient)
 	if err != nil {
 		return fmt.Errorf("failed to create Spotify Discord bot: %w", err)
 	}
@@ -156,6 +156,13 @@ func withVersion(msg string) string {
 	return fmt.Sprintf("%s\nVersion: %s", msg, version)
 }
 
+// Playlist names are looked up with the Spotify client and saved in the tags file
+var (
+	_ discord.PlaylistNameFetcher = (*spotify.Client)(nil)
+	_ discord.PlaylistNameStore   = (*trigger.Store)(nil)
+	_ discord.PlaylistNamer       = (*trigger.Store)(nil) // So /tags shows the names
+)
+
 // staticTriggers is a trigger source that never changes
 type staticTriggers struct{ config *trigger.Config }
 
@@ -177,8 +184,15 @@ func loadPlaylistTags() (discord.TriggerSource, discord.TagStore) {
 	if path == "" {
 		path = defaultTagsFile
 	}
+	if storePath := trigger.StorePath(path); storePath != path {
+		logger.Warn("Saving playlist tags as YAML next to the JSON file; update "+envvar.SpotifyTagsFile+" to the YAML path",
+			zap.String(zapkey.Path, storePath), zap.String(zapkey.Path+"_json", path))
+		path = storePath
+	}
+	// Tags saved by earlier versions in a JSON file are converted, so that counts as a file too
 	_, statErr := os.Stat(path)
-	fileExists := statErr == nil
+	_, legacyStatErr := os.Stat(trigger.LegacyPath(path))
+	fileExists := statErr == nil || legacyStatErr == nil
 
 	seed, seedErr := trigger.LoadSeed()
 	if seedErr == nil {
@@ -209,14 +223,7 @@ func loadPlaylistTags() (discord.TriggerSource, discord.TagStore) {
 		return staticTriggers{fallback}, nil
 	}
 	logDroppedPlaylists(store.Config(), result.Dropped)
-	if result.Backup != "" {
-		logger.Info("Converted the playlist tags file to one playlist per tag and backed up the original",
-			zap.String(zapkey.Path, result.Backup))
-	}
-	if result.SaveErr != nil {
-		logger.Warn("Failed to save the converted playlist tags file; using the converted tags anyway and retrying on the next change",
-			zap.String(zapkey.Path, path), zap.Error(result.SaveErr))
-	}
+	logStoreMigration(path, result)
 	switch {
 	case result.Created && len(seed) > 0:
 		logger.Info("Created the playlist tags file from "+envvar.SpotifyPlaylistTriggers, zap.String(zapkey.Path, path))
@@ -228,6 +235,32 @@ func loadPlaylistTags() (discord.TriggerSource, discord.TagStore) {
 	}
 	logTriggers(store.Config())
 	return store, store
+}
+
+// logStoreMigration logs what OpenStore did with the JSON tags file of earlier versions, if anything
+func logStoreMigration(path string, result trigger.OpenResult) {
+	switch {
+	case result.YAMLBackup != "":
+		logger.Warn("The JSON playlist tags file is newer than the YAML file, e.g. after a rollback; "+
+			"converted it again and backed up the YAML file",
+			zap.String(zapkey.Path, path),
+			zap.String(zapkey.Path+"_yaml_backup", result.YAMLBackup),
+			zap.String(zapkey.Path+"_json_backup", result.Backup))
+	case result.Converted && result.Backup != "":
+		logger.Info("Converted the playlist tags file to YAML and backed up the JSON file",
+			zap.String(zapkey.Path, path), zap.String(zapkey.Path+"_json_backup", result.Backup))
+	case result.Backup != "":
+		logger.Info("Backed up the JSON playlist tags file left over from an interrupted conversion; using the YAML file",
+			zap.String(zapkey.Path, path), zap.String(zapkey.Path+"_json_backup", result.Backup))
+	}
+	if result.SaveErr != nil {
+		logger.Warn("Failed to save the converted playlist tags file; using the converted tags anyway and retrying on the next change",
+			zap.String(zapkey.Path, path), zap.Error(result.SaveErr))
+	}
+	if result.BackupErr != nil {
+		logger.Warn("Problem backing up a playlist tags file; using the YAML file anyway",
+			zap.String(zapkey.Path, path), zap.Error(result.BackupErr))
+	}
 }
 
 // logDroppedPlaylists warns about tags that lost playlists when tags became one playlist each.
@@ -259,8 +292,9 @@ func logTriggers(c *trigger.Config) {
 	logger.Info("Loaded playlist triggers", zap.Strings(zapkey.Triggers, names))
 }
 
-// newSpotifyBot creates the Discord bot that collects songs into the Spotify playlist
-func newSpotifyBot(playlistAdder discord.PlaylistAdder) (*discord.Client, error) {
+// newSpotifyBot creates the Discord bot that collects songs into the Spotify playlist.
+// nameFetcher looks up the names of tagged playlists, which are saved with the tags.
+func newSpotifyBot(playlistAdder discord.PlaylistAdder, nameFetcher discord.PlaylistNameFetcher) (*discord.Client, error) {
 	config, err := discordconfig.Load(envvar.NamespaceSpotify)
 	if err != nil {
 		return nil, err
@@ -299,10 +333,16 @@ func newSpotifyBot(playlistAdder discord.PlaylistAdder) (*discord.Client, error)
 
 	// Handlers
 	triggers, tags := loadPlaylistTags()
+	var names *discord.PlaylistNames
+	if nameStore, ok := tags.(discord.PlaylistNameStore); ok {
+		names = discord.NewPlaylistNames(nameFetcher, nameStore)
+	}
 	handlers := []discord.Handler{
 		discord.NewReadyHandler(songsChannelID, withVersion(readyMessage), listeningMessage),
-		discord.NewMessageHandler(playlistAdder, actions, discord.WithPlaylistTriggers(triggers)),
-		discord.NewInteractionSessionHandler(discord.WithTagCommands(config.AppID, tags)),
+		discord.NewMessageHandler(playlistAdder, actions,
+			discord.WithPlaylistTriggers(triggers), discord.WithPlaylistNames(names)),
+		discord.NewInteractionSessionHandler(
+			discord.WithTagCommands(config.AppID, tags), discord.WithTagPlaylistNames(names)),
 	}
 
 	// Create the client
