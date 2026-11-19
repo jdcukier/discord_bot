@@ -515,18 +515,22 @@ func TestOpenStoreIgnoresInvalidDefaultPlaylist(t *testing.T) {
 	playlists := "playlists:\n  - name: Gym\n    id: " + gymID + "\n    tags: [gym]\n"
 	// The block is cosmetic, so an invalid one only drops the default playlist's name.
 	// The error doesn't show IDs in full, since it's logged.
-	for name, block := range map[string]string{
-		"no ID":         "default_playlist: {name: X}\n",
-		"invalid ID":    "default_playlist:\n  name: X\n  id: " + gymID + "x\n",
-		"unknown field": "default_playlist:\n  name: X\n  id: " + defaultID + "\n  nmae: Y\n",
-		"not a map":     "default_playlist: " + gymID + "\n",
-		"wrong type":    "default_playlist:\n  name: [X]\n  id: " + defaultID + "\n",
+	// Errors give the line in the file, and don't mention Go types.
+	for name, tc := range map[string]struct{ block, err string }{
+		"no ID":         {"default_playlist: {name: X}\n", `default_playlist line 2: "" isn't a valid Spotify playlist ID or link`},
+		"invalid ID":    {"default_playlist:\n  name: X\n  id: " + gymID + "x\n", `default_playlist line 4: "` + gymID[:4] + `…" isn't a valid Spotify playlist ID or link`},
+		"unknown field": {"default_playlist:\n  name: X\n  id: " + defaultID + "\n  extra: Y\n", `default_playlist line 5: unknown field "extra"`},
+		"ID as field":   {"default_playlist:\n  " + gymID + ": X\n", `default_playlist line 3: unknown field "` + gymID[:4] + `…"`},
+		"not a map":     {"default_playlist: " + gymID + "\n", "default_playlist line 2: must have a name and an id"},
+		"wrong type":    {"default_playlist:\n  name: [X]\n  id: " + defaultID + "\n", "default_playlist line 3: name must be text"},
 	} {
-		require.NoError(t, os.WriteFile(path, []byte(block+playlists), 0o600), name)
+		// After a comment line, so line numbers count from the start of the file
+		require.NoError(t, os.WriteFile(path, []byte("# Hand-edited\n"+tc.block+playlists), 0o600), name)
 		store, result, err := OpenStore(path, testSettings(t), nil)
 		require.NoError(t, err, name)
 		require.Error(t, result.DefaultErr, name)
-		assert.Contains(t, result.DefaultErr.Error(), "default_playlist", name)
+		assert.Equal(t, tc.err, result.DefaultErr.Error(), name)
+		assert.NotContains(t, result.DefaultErr.Error(), "trigger.", name)
 		assert.NotContains(t, result.DefaultErr.Error(), gymID, name)
 		assert.NotContains(t, result.DefaultErr.Error(), defaultID, name)
 		assert.Empty(t, store.PlaylistName(defaultID), name)

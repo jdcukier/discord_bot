@@ -58,25 +58,36 @@ type storeDefault struct {
 	Name string `yaml:"name"`
 	ID   string `yaml:"id"`
 
-	err error // Why the block couldn't be read, if it couldn't
+	line int   // Line of the ID in the file, or of the block if it has no ID
+	err  error // Why the block couldn't be read, if it couldn't, starting with the line in the file
 }
 
 // UnmarshalYAML reads the block as strictly as the rest of the file, but records errors instead of
-// failing, since the block is cosmetic: an invalid one shouldn't keep the tags from loading
+// failing, since the block is cosmetic: an invalid one shouldn't keep the tags from loading.
+// Errors give the line in the file and describe the problem in terms of the file, not Go types.
 func (d *storeDefault) UnmarshalYAML(value *yaml.Node) error {
-	type plain storeDefault // Without this method, so decoding doesn't recurse
-	var block plain
-	data, err := yaml.Marshal(value)
-	if err == nil {
-		decoder := yaml.NewDecoder(bytes.NewReader(data))
-		decoder.KnownFields(true)
-		err = decoder.Decode(&block)
-	}
-	if err != nil {
-		*d = storeDefault{err: err}
+	*d = storeDefault{line: value.Line}
+	if value.Kind != yaml.MappingNode {
+		d.err = fmt.Errorf("line %d: must have a name and an id", value.Line)
 		return nil
 	}
-	*d = storeDefault(block)
+	for i := 0; i+1 < len(value.Content); i += 2 {
+		key, field := value.Content[i], value.Content[i+1]
+		var target *string
+		switch key.Value {
+		case "name":
+			target = &d.Name
+		case "id":
+			target, d.line = &d.ID, field.Line
+		default:
+			*d = storeDefault{err: fmt.Errorf("line %d: unknown field %q", key.Line, key.Value)}
+			return nil
+		}
+		if field.Kind != yaml.ScalarNode || field.Decode(target) != nil {
+			*d = storeDefault{err: fmt.Errorf("line %d: %s must be text", field.Line, key.Value)}
+			return nil
+		}
+	}
 	return nil
 }
 
@@ -317,9 +328,10 @@ func parseStoreFile(data []byte) (tags, names map[string]string, defaultErr, err
 		id, err := ExtractPlaylistID(file.Default.ID)
 		switch {
 		case file.Default.err != nil:
-			defaultErr = fmt.Errorf("default_playlist: %w", file.Default.err)
+			defaultErr = fmt.Errorf("default_playlist %w", file.Default.err)
 		case err != nil:
-			defaultErr = fmt.Errorf("default_playlist: %q isn't a valid Spotify playlist ID or link", log.RedactID(file.Default.ID))
+			defaultErr = fmt.Errorf("default_playlist line %d: %q isn't a valid Spotify playlist ID or link",
+				file.Default.line, log.RedactID(file.Default.ID))
 		case names[id] == "":
 			names[id] = file.Default.Name
 		}
