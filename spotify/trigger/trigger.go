@@ -231,6 +231,9 @@ func validatePrefix(prefix string) error {
 	if prefix == PlusPrefix {
 		return fmt.Errorf("trigger prefix can't be %q: it marks tags that also add to the default playlist", PlusPrefix)
 	}
+	if prefix == "`" {
+		return fmt.Errorf("trigger prefix can't be %q: it marks code in Discord messages", prefix)
+	}
 	return nil
 }
 

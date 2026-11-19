@@ -6,6 +6,7 @@ import (
 	"maps"
 	"slices"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/bwmarrin/discordgo"
@@ -128,8 +129,18 @@ type tagReply struct {
 }
 
 // PlaylistNamer looks up playlist names. It returns "" for playlists whose name isn't known.
+// /tags calls it once per playlist before replying, and Discord drops interactions that aren't
+// answered within 3 seconds, so PlaylistName must only read cached names and must not call Spotify.
 type PlaylistNamer interface {
 	PlaylistName(id string) string
+}
+
+// playlistNames returns the tag store's playlist name lookup, or nil if it doesn't know names
+func playlistNames(tags TagStore) func(id string) string {
+	if names, ok := tags.(PlaylistNamer); ok {
+		return names.PlaylistName
+	}
+	return nil
 }
 
 // Labels for playlists whose name isn't known
@@ -138,8 +149,13 @@ const (
 	defaultPlaylistLabel  = "Default playlist"
 )
 
-// exampleTags are used in the /tags examples when there aren't enough real tags
-var exampleTags = []string{"gym", "chill"}
+// maxPlaylistNameLength is the most characters of a playlist name /tags shows, so a long name
+// can't push its line over maxMessageLength and get split inside the link
+const maxPlaylistNameLength = 100
+
+// exampleTags are used in the /tags examples when there aren't enough real tags.
+// There are more than two, so there's always one that's different from the first example.
+var exampleTags = []string{"gym", "chill", "party"}
 
 // listTags formats the playlists with their tags as messages of at most maxMessageLength characters.
 // name returns a playlist's name, or "" if it isn't known.
@@ -153,7 +169,7 @@ func listTags(c *trigger.Config, name func(id string) string) []string {
 	for id, tags := range byPlaylist {
 		slices.Sort(tags)
 		if name != nil {
-			names[id] = strings.TrimSpace(name(id))
+			names[id] = cleanPlaylistName(name(id))
 		}
 	}
 
@@ -217,39 +233,70 @@ func listTags(c *trigger.Config, name func(id string) string) []string {
 	return chunkLines(blocks, maxMessageLength)
 }
 
-// exampleTagNames picks two tags for the /tags examples: real tags on two different playlists
-// other than the default one where possible, otherwise from exampleTags
+// exampleTagNames picks two different tags for the /tags examples, preferring, in order:
+// real tags on two different playlists other than the default one, names from exampleTags
+// that aren't tags (so they can't mislead), any other real tag, and any name from exampleTags.
+// It never returns "".
 func exampleTagNames(c *trigger.Config) (first, second string) {
-	for _, tag := range slices.Sorted(maps.Keys(c.Tags)) {
-		id := c.Tags[tag]
-		switch {
-		case id == c.DefaultPlaylistID:
-		case first == "":
-			first = tag
-		case id != c.Tags[first]:
-			return first, tag
-		}
-	}
+	tags := slices.Sorted(maps.Keys(c.Tags))
+	var unused []string // Example names that aren't tags
 	for _, tag := range exampleTags {
-		if _, exists := c.Tags[tag]; exists || tag == first {
-			continue
-		}
-		if first == "" {
-			first = tag
-		} else if second == "" {
-			second = tag
+		if _, exists := c.Tags[tag]; !exists {
+			unused = append(unused, tag)
 		}
 	}
+	// pick returns the first name in the lists that isn't first and that ok accepts
+	pick := func(ok func(tag string) bool, lists ...[]string) string {
+		for _, list := range lists {
+			for _, tag := range list {
+				if tag != first && ok(tag) {
+					return tag
+				}
+			}
+		}
+		return ""
+	}
+	notDefault := func(tag string) bool { return c.Tags[tag] != c.DefaultPlaylistID }
+	anyTag := func(string) bool { return true }
+
+	first = cmp.Or(pick(notDefault, tags), pick(anyTag, unused, tags, exampleTags))
+	differentPlaylist := func(tag string) bool { return notDefault(tag) && c.Tags[tag] != c.Tags[first] }
+	if _, isTag := c.Tags[first]; !isTag {
+		differentPlaylist = func(string) bool { return false }
+	}
+	second = cmp.Or(pick(differentPlaylist, tags), pick(anyTag, unused, tags, exampleTags))
 	return first, second
+}
+
+// cleanPlaylistName makes a playlist name safe to show on one line: control characters and line
+// or paragraph separators become spaces, invisible format characters (zero-width, bidi) are
+// dropped, runs of spaces are collapsed, and names over maxPlaylistNameLength characters are cut
+// with an ellipsis. It doesn't escape markdown; see escapeMarkdown.
+func cleanPlaylistName(name string) string {
+	name = strings.Map(func(r rune) rune {
+		switch {
+		case unicode.IsControl(r) || unicode.In(r, unicode.Zl, unicode.Zp):
+			return ' '
+		case unicode.Is(unicode.Cf, r):
+			return -1
+		}
+		return r
+	}, name)
+	name = strings.Join(strings.Fields(name), " ")
+	if utf8.RuneCountInString(name) <= maxPlaylistNameLength {
+		return name
+	}
+	const ellipsis = "…"
+	runes := []rune(name)
+	return strings.TrimSpace(string(runes[:maxPlaylistNameLength-1])) + ellipsis
 }
 
 // markdownEscaper escapes the characters that would break a masked link or format its text
 var markdownEscaper = strings.NewReplacer(
 	`\`, `\\`, "[", `\[`, "]", `\]`, "*", `\*`, "_", `\_`, "`", "\\`", "~", `\~`, "|", `\|`, ">", `\>`,
-	"\r\n", " ", "\n", " ", "\r", " ",
 )
 
-// escapeMarkdown escapes s so Discord shows it as plain text on one line, e.g. as a link's text
+// escapeMarkdown escapes s so Discord shows it as plain text, e.g. as a link's text
 func escapeMarkdown(s string) string {
 	return markdownEscaper.Replace(s)
 }

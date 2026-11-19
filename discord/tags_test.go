@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -208,6 +209,10 @@ func TestExampleTagNames(t *testing.T) {
 		{"aliases only", map[string][]string{"chill": {chillTestID}, "relax": {chillTestID}}, "chill", "gym"},
 		{"default playlist only", map[string][]string{"main": {defaultTestID}}, "gym", "chill"},
 		{"two playlists", map[string][]string{"b": {gymTestID}, "a": {gymTestID}, "c": {chillTestID}}, "a", "c"},
+		{"fallbacks are aliases", map[string][]string{"gym": {gymTestID}, "chill": {gymTestID}}, "chill", "party"},
+		{"fallbacks on the default playlist", map[string][]string{"gym": {defaultTestID}, "chill": {defaultTestID}}, "party", "chill"},
+		{"all fallbacks are aliases", map[string][]string{"gym": {gymTestID}, "chill": {gymTestID}, "party": {gymTestID}}, "chill", "gym"},
+		{"all fallbacks on the default playlist", map[string][]string{"gym": {defaultTestID}, "chill": {defaultTestID}, "party": {defaultTestID}}, "chill", "gym"},
 	} {
 		first, second := exampleTagNames(newTestTagStore(t, tc.tags).Config())
 		assert.Equal(t, tc.first, first, tc.name)
@@ -218,7 +223,60 @@ func TestExampleTagNames(t *testing.T) {
 func TestEscapeMarkdown(t *testing.T) {
 	assert.Equal(t, "Plain name", escapeMarkdown("Plain name"))
 	assert.Equal(t, `\[a\]\*b\*\_c\_\`+"`d\\`"+`\~e\~\|f\|\>g\\h`, escapeMarkdown("[a]*b*_c_`d`~e~|f|>g\\h"))
-	assert.Equal(t, "one two three", escapeMarkdown("one\ntwo\r\nthree"))
+}
+
+func TestCleanPlaylistName(t *testing.T) {
+	assert.Equal(t, "Plain name", cleanPlaylistName("  Plain name "))
+	// Line breaks, separators and other control characters become spaces
+	lineSep, paraSep := string(rune(0x2028)), string(rune(0x2029))
+	assert.Equal(t, "a b c d e f", cleanPlaylistName("a\nb\r\nc"+lineSep+"d"+paraSep+"e\tf\x00"))
+	// Invisible format characters (zero-width space, bidi override and isolate, BOM) are dropped
+	zeroWidth := string(rune(0x200b))
+	assert.Equal(t, "abcd", cleanPlaylistName("a"+zeroWidth+"b"+string(rune(0x202e))+"c"+string(rune(0x2066))+"d"+string(rune(0xfeff))))
+	// Only invisible characters: treated as unknown
+	assert.Equal(t, "", cleanPlaylistName(zeroWidth+"\n"))
+
+	// Long names are cut on a character boundary
+	long := strings.Repeat("é", maxPlaylistNameLength+5)
+	got := cleanPlaylistName(long)
+	assert.Equal(t, maxPlaylistNameLength, utf8.RuneCountInString(got))
+	assert.Equal(t, strings.Repeat("é", maxPlaylistNameLength-1)+"…", got)
+	exact := strings.Repeat("x", maxPlaylistNameLength)
+	assert.Equal(t, exact, cleanPlaylistName(exact))
+}
+
+func TestListTagsLongAndUnsafeNames(t *testing.T) {
+	store := newTestTagStore(t, map[string][]string{"gym": {gymTestID}, "chill": {chillTestID}})
+	names := testNames(map[string]string{
+		gymTestID:   strings.Repeat(`\[`, 2000),
+		chillTestID: "Late\nNight" + string(rune(0x202e)), // Ends with a bidi override
+	})
+	chunks := listTags(store.Config(), names)
+	require.Len(t, chunks, 1)
+	assert.LessOrEqual(t, len(chunks[0]), maxMessageLength)
+	// The name is cut before escaping, so the link stays whole and no escape is split
+	assert.Contains(t, chunks[0], "🎧 **["+strings.Repeat(`\\\[`, (maxPlaylistNameLength-1)/2)+`\\…](<https://open.spotify.com/playlist/`+gymTestID+">)** — `gym`")
+	assert.Contains(t, chunks[0], "🎧 **[Late Night](<https://open.spotify.com/playlist/"+chillTestID+">)** — `chill`")
+}
+
+// namedTagStore is a tag store that knows playlist names
+type namedTagStore struct {
+	*trigger.Store
+	names map[string]string
+}
+
+func (s namedTagStore) PlaylistName(id string) string { return s.names[id] }
+
+func TestPlaylistNames(t *testing.T) {
+	store := newTestTagStore(t, map[string][]string{"gym": {gymTestID}})
+	// Stores that don't know names give no lookup
+	assert.Nil(t, playlistNames(store))
+
+	named := namedTagStore{Store: store, names: map[string]string{gymTestID: "Gym Bangers"}}
+	name := playlistNames(named)
+	require.NotNil(t, name)
+	assert.Equal(t, "Gym Bangers", name(gymTestID))
+	assert.Contains(t, listTags(named.Config(), name)[0], "🎧 **[Gym Bangers](<https://open.spotify.com/playlist/"+gymTestID+">)** — `gym`")
 }
 
 func TestListTagsSplitsLongLists(t *testing.T) {

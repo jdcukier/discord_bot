@@ -62,6 +62,6 @@ Tags used to point to several playlists. Older files and secrets are converted a
 
 | Variable | Default | Description |
 | --- | --- | --- |
-| `SPOTIFY_TRIGGER_PREFIX` | `!` | The single symbol that marks a tag. It can't be `+`, which marks tags that also add to the default playlist. Avoid `$` (Docker Compose treats it as a variable) and `#`/`:` (hashtags and `:emoji:` would look like tags). |
+| `SPOTIFY_TRIGGER_PREFIX` | `!` | The single symbol that marks a tag. It can't be `+`, which marks tags that also add to the default playlist, or `` ` ``, which marks code in Discord. Avoid `$` (Docker Compose treats it as a variable) and `#`/`:` (hashtags and `:emoji:` would look like tags). |
 | `SPOTIFY_REPLY_UNKNOWN_TRIGGERS` | `false` | When `true`, the bot replies `Unknown playlist: !name` when someone uses a tag that isn't configured. |
 | `SPOTIFY_TAGS_FILE` | `playlist-tags.json` | Where tags are saved. `docker-compose.yml` sets it to `/data/playlist-tags.json` on the volume. |
