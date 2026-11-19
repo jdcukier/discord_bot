@@ -107,6 +107,7 @@ func TestOpenStoreConvertsReadOnlyLegacyFile(t *testing.T) {
 	// The converted tags are used even though they can't be saved
 	store, result := openTestStore(t, path, nil)
 	require.Error(t, result.SaveErr)
+	assert.Empty(t, result.Backup, "nothing was backed up yet")
 	assert.Equal(t, map[string]string{"relax": chillID}, store.Config().Tags)
 	data, err := os.ReadFile(path)
 	require.NoError(t, err)
@@ -136,6 +137,28 @@ func TestOpenStoreCreateFails(t *testing.T) {
 	require.Error(t, err)
 	assert.Nil(t, store)
 	assert.Equal(t, OpenResult{}, result)
+}
+
+func TestOpenStoreKeepsEarlierBackups(t *testing.T) {
+	// Upgrade, roll back by restoring the backup, change tags, upgrade again
+	path := filepath.Join(t.TempDir(), "tags.json")
+	first := `{"tags": {"relax": ["` + chillID + `"]}}`
+	second := `{"tags": {"relax": ["` + chillID + `"], "gym": ["` + gymID + `"]}}`
+	require.NoError(t, os.WriteFile(path, []byte(first), 0o600))
+	_, result := openTestStore(t, path, nil)
+	assert.Equal(t, path+BackupSuffix, result.Backup)
+
+	require.NoError(t, os.WriteFile(path, []byte(second), 0o600))
+	_, result = openTestStore(t, path, nil)
+	require.NoError(t, result.SaveErr)
+	require.NotEqual(t, path+BackupSuffix, result.Backup)
+
+	data, err := os.ReadFile(path + BackupSuffix)
+	require.NoError(t, err)
+	assert.Equal(t, first, string(data))
+	data, err = os.ReadFile(result.Backup)
+	require.NoError(t, err)
+	assert.Equal(t, second, string(data))
 }
 
 func TestOpenStoreInvalidFile(t *testing.T) {

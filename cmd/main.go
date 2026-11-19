@@ -210,7 +210,7 @@ func loadPlaylistTags() (discord.TriggerSource, discord.TagStore) {
 	}
 	logDroppedPlaylists(store.Config(), result.Dropped)
 	if result.Backup != "" {
-		logger.Info("Converted the playlist tags file to one playlist per tag; the original is kept as a backup",
+		logger.Info("Converted the playlist tags file to one playlist per tag and backed up the original",
 			zap.String(zapkey.Path, result.Backup))
 	}
 	if result.SaveErr != nil {

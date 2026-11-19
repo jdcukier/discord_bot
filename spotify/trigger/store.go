@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 // editorialPrefix starts the IDs of Spotify-owned editorial playlists, which nobody else can add to
@@ -41,17 +42,19 @@ type Store struct {
 	config atomic.Pointer[Config]
 
 	legacy []byte // Earlier-format file contents, backed up before the file is first overwritten
+	backup string // Where legacy was backed up
 }
 
 // OpenResult describes what OpenStore did besides loading the tags
 type OpenResult struct {
 	Created bool                // The file didn't exist and was created from the seed
 	Dropped map[string][]string // Tags converted from several playlists to one, and the playlists they lost
-	Backup  string              // Where the earlier-format file was copied before being converted
+	Backup  string              // Where the earlier-format file was backed up, once the conversion was saved
 	SaveErr error               // Converting the file worked but saving it didn't; it's retried on the next change
 }
 
-// BackupSuffix is added to the path of an earlier-format tags file to back it up before conversion
+// BackupSuffix is added to the path of an earlier-format tags file to back it up before conversion.
+// If that backup already exists (e.g. after a rollback and a second upgrade), a timestamp is added too.
 const BackupSuffix = ".v1.bak"
 
 // OpenStore loads the tags saved at path, using settings for everything else
@@ -104,8 +107,8 @@ func OpenStore(path string, settings *Config, seed map[string][]string) (*Store,
 		}
 		// The converted tags work even if they can't be saved yet; save backs up the old file first
 		s.legacy = data
-		result.Backup = path + BackupSuffix
 		result.SaveErr = s.save(tags)
+		result.Backup = s.backup
 		return s, result, nil
 	}
 	tags, err := normalizeTags(file.Tags)
@@ -282,14 +285,14 @@ func (s *Store) save(tags map[string]string) error {
 
 // backupLegacy copies the earlier-format file next to it, so playlists dropped by the
 // conversion aren't lost and an older version of the bot can still be restored.
-// An existing backup is kept, since it's the original.
+// Existing backups are never overwritten.
 func (s *Store) backupLegacy() error {
 	path := s.path + BackupSuffix
-	if _, err := os.Stat(path); err == nil {
-		s.legacy = nil
-		return nil
-	}
 	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if errors.Is(err, os.ErrExist) {
+		path = fmt.Sprintf("%s.v1.%s.bak", s.path, time.Now().UTC().Format("20060102T150405.000000000Z"))
+		f, err = os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	}
 	if err != nil {
 		return fmt.Errorf("failed to back up the old tags file: %w", err)
 	}
@@ -308,6 +311,7 @@ func (s *Store) backupLegacy() error {
 		return fmt.Errorf("failed to back up the old tags file: %w", err)
 	}
 	s.legacy = nil
+	s.backup = path
 	return nil
 }
 
